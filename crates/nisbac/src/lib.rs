@@ -10,6 +10,8 @@ pub enum Error {
     DuplicateMemberName(String),
     #[error("Tag assigned more than once")]
     TagAssignedMoreThanOnce,
+    #[error("Invalid tag bits {0}")]
+    InvalidTagBits(u16),
     #[error("Tag value out of range")]
     TagValueOutOfRange,
     #[error("Element not byte aligned")]
@@ -21,5 +23,5 @@ pub enum Error {
 }
 
 pub mod ast;
-pub mod schema;
 pub mod backend;
+pub mod schema;

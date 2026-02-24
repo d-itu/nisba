@@ -199,6 +199,9 @@ impl Schema {
                             tag: ast::Unsigned(tag_bits),
                             ref mut members,
                         } => {
+                            if tag_bits % 8 != 0 {
+                                Err(Error::InvalidTagBits(tag_bits))?
+                            }
                             for member in &mut members[..] {
                                 if let None = result.resolve(
                                     member.ty.get_or_insert(ast::Type::Unresolved(
@@ -211,7 +214,10 @@ impl Schema {
                             }
                             let mut resolved_members = Vec::with_capacity(members.len());
                             let mut assigned_tags = BTreeSet::new();
-                            let tag_max = (1 << tag_bits) - 1;
+                            let tag_max = match kind {
+                                ast::UnionKind::Enum => (1 << tag_bits) - 1,
+                                ast::UnionKind::Dict => tag_bits as _,
+                            };
                             let mut tag_counter = match kind {
                                 ast::UnionKind::Enum => 0,
                                 ast::UnionKind::Dict => 1,
