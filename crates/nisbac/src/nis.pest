@@ -1,0 +1,39 @@
+Doc     =  { SOI ~ Typedef* ~ EOI }
+Typedef = _{ Primitive | Tuple | Union }
+
+Primitive = ${ "@primitive" ~ ws+ ~ Ident ~ ws* ~ (Signed | Unsigned | Void) }
+
+Tuple  =  { (Struct | Packed) ~ Ident ~ "{" ~ Member* ~ "}" }
+Struct = @{ "@struct" ~ ws+ }
+Packed = @{ "@packed" ~ ws+ }
+
+Union = { (Enum | Dict) ~ "(" ~ Unsigned ~ ")" ~ Ident ~ "{" ~ TaggedMember* ~ "}" }
+Enum  = { "@enum" }
+Dict  = { "@dict" }
+
+Member       = { Ident ~ ":" ~ Type }
+TaggedMember = { Ident ~ (":" ~ Type)? ~ ("=" ~ Number)? }
+
+Type   =  { Array | VarintSigned | VarintUnsigned | Signed | Unsigned | Void | Ident }
+Array  =  { (Vector | Stream) ~ "(" ~ Length ~ Type ~ ")" }
+Vector =  { "@vector" }
+Stream =  { "@stream" }
+Length = _{ Unsigned | VarintUnsigned }
+
+VarintSigned   =  { "@varint" ~ "(" ~ Signed ~ ")" }
+VarintUnsigned =  { "@varint" ~ "(" ~ Unsigned ~ ")" }
+Signed         = ${ "i" ~ Dec }
+Unsigned       = ${ "u" ~ Dec }
+Void           =  { "void" }
+
+Number     =  { Bin | Hex | Dec }
+Bin        = @{ "0b" ~ ASCII_BIN_DIGIT+ }
+Hex        = @{ "0x" ~ ASCII_HEX_DIGIT+ }
+Dec        = @{ "0" | NonZeroDec }
+NonZeroDec = @{ ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+
+Ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+ws         = _{ " " | "\r" | "\n" | "\t" }
+WHITESPACE = _{ " " | "\r" | "\n" | "\t" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }

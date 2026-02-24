@@ -1,0 +1,9 @@
+[package]
+name = "nisbac"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pest = "2.8.6"
+pest_derive = "2.8.6"
+thiserror = "2.0.18"
