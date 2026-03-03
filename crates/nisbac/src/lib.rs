@@ -5,22 +5,24 @@ pub enum Error {
     #[error(transparent)]
     ParseError(#[from] pest::error::Error<ast::Rule>),
     #[error("Multiple definitions for identifier '{0}'")]
-    MultipleDefinitions(String),
+    MultipleDefinitions(Ident),
     #[error("Duplicate member name '{0}'")]
-    DuplicateMemberName(String),
-    #[error("Tag assigned more than once")]
-    TagAssignedMoreThanOnce,
-    #[error("Invalid tag bits {0}")]
-    InvalidTagBits(u16),
-    #[error("Tag value out of range")]
-    TagValueOutOfRange,
-    #[error("Element not byte aligned")]
-    ElementNotByteAligned,
-    #[error("Variable size not supported")]
-    VariableSize,
+    DuplicateMemberName(Ident),
+    #[error("Discriminant assigned more than once")]
+    DiscriminantAssignedMoreThanOnce,
+    #[error("Discriminant has unsupported bit width {0}")]
+    InvalidDiscriminantBitWidth(u16),
+    #[error("Discriminant value out of range")]
+    DiscriminantValueOutOfRange,
+    #[error("Size not aligned to byte")]
+    NotByteAligned,
+    #[error("Size must be known at compilation time")]
+    UnknownSize,
     #[error("Unresolved reference")]
     UnresolvedReference,
 }
+
+pub type Ident = smol_str::SmolStr;
 
 pub mod ast;
 pub mod backend;

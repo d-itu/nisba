@@ -1,11 +1,7 @@
-use std::collections::HashSet;
-
 use crate::{
-    Error,
+    Error, Ident,
     schema::{self, Handle},
 };
-
-type Ident = String;
 
 #[derive(Debug)]
 pub enum TypeDef {
@@ -22,7 +18,7 @@ pub enum TypeDefValue {
     },
     Union {
         kind: UnionKind,
-        tag: Unsigned,
+        discriminant_bit_width: Unsigned,
         members: Vec<TaggedMember>,
     },
 }
@@ -56,7 +52,7 @@ pub struct Member {
 pub struct TaggedMember {
     pub name: Ident,
     pub ty: Option<Type>,
-    pub tag: Option<u64>,
+    pub discriminant: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -111,6 +107,7 @@ pub struct VarintSigned(pub u16);
 #[derive(Debug, Clone, Copy)]
 pub struct VarintUnsigned(pub u16);
 
+use ahash::AHashSet;
 use pest::{
     Parser as _,
     iterators::{Pair, Pairs},
@@ -197,7 +194,7 @@ fn parse_number(pair: Pair<Rule>) -> u64 {
 
 fn parse_members(pairs: Pairs<Rule>) -> Result<Vec<Member>, Error> {
     let mut result = vec![];
-    let mut used_names = HashSet::new();
+    let mut used_names = AHashSet::new();
     for pair in pairs {
         debug_assert_eq!(pair.as_rule(), Rule::Member);
         let mut inner = pair.into_inner();
@@ -213,25 +210,29 @@ fn parse_members(pairs: Pairs<Rule>) -> Result<Vec<Member>, Error> {
 
 fn parse_tagged_members(pairs: Pairs<Rule>) -> Result<Vec<TaggedMember>, Error> {
     let mut result = vec![];
-    let mut used_names = HashSet::new();
+    let mut used_names = AHashSet::new();
     for pair in pairs {
         let mut inner = pair.into_inner();
         let ident = inner.next().unwrap();
         debug_assert_eq!(ident.as_rule(), Rule::Ident);
         let mut ty = None;
-        let mut tag = None;
+        let mut discriminant = None;
         for pair in inner {
             match pair.as_rule() {
                 Rule::Type => ty = Some(parse_type(pair)),
-                Rule::Number => tag = Some(parse_number(pair)),
+                Rule::Number => discriminant = Some(parse_number(pair)),
                 _ => unreachable!(),
             }
         }
-        let name: String = ident.as_str().into();
+        let name: Ident = ident.as_str().into();
         if !used_names.insert(name.clone()) {
             Err(Error::DuplicateMemberName(name.clone()))?
         }
-        result.push(TaggedMember { name, ty, tag });
+        result.push(TaggedMember {
+            name,
+            ty,
+            discriminant,
+        });
     }
     Ok(result)
 }
@@ -277,13 +278,17 @@ pub fn parse(input: &str) -> Result<Vec<TypeDef>, Error> {
                     Rule::Dict => UnionKind::Dict,
                     _ => unreachable!(),
                 };
-                let tag = parse_unsigned(inner.next().unwrap());
+                let width = parse_unsigned(inner.next().unwrap());
                 let ident = inner.next().unwrap();
                 debug_assert_eq!(ident.as_rule(), Rule::Ident);
                 let members = parse_tagged_members(inner)?;
                 TypeDef::Unresolved {
                     name: ident.as_str().into(),
-                    value: TypeDefValue::Union { kind, tag, members },
+                    value: TypeDefValue::Union {
+                        kind,
+                        discriminant_bit_width: width,
+                        members,
+                    },
                 }
             }
             _ => unreachable!(),

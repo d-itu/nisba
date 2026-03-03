@@ -1,14 +1,11 @@
-use std::{
-    collections::{BTreeSet, HashMap},
-    mem,
-};
+use std::{iter::Sum, mem};
+
+use ahash::{AHashMap, AHashSet};
 
 use crate::{
-    Error,
+    Error, Ident,
     ast::{self, Signed, TypeDef, TypeDefValue, Unsigned, VarintSigned, VarintUnsigned},
 };
-
-type Identifier = String;
 
 #[derive(Debug)]
 pub struct Schema {
@@ -35,10 +32,13 @@ impl Schema {
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }
+    pub fn get_definition(&self, handle: Handle) -> &Definition {
+        &self.definitions[handle.0]
+    }
     fn resolve(
         &mut self,
         ty: &mut ast::Type,
-        resolved: &HashMap<Identifier, Handle>,
+        resolved: &AHashMap<Ident, Handle>,
     ) -> Result<Option<Type>, Error> {
         Ok(match ty {
             ast::Type::Unresolved(unresolved) => match unresolved {
@@ -53,40 +53,40 @@ impl Schema {
                 }
                 &mut ast::UnresolvedType::Signed(Signed(bits)) => {
                     let res = Type::Integer(Integer {
-                        bits,
-                        signed: Signedness::Signed,
+                        bit_width: bits,
+                        signedness: Signedness::Signed,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
                 &mut ast::UnresolvedType::Unsigned(Unsigned(bits)) => {
                     let res = Type::Integer(Integer {
-                        bits,
-                        signed: Signedness::Unsigned,
+                        bit_width: bits,
+                        signedness: Signedness::Unsigned,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
                 ast::UnresolvedType::Void => {
                     let res = Type::Integer(Integer {
-                        bits: 0,
-                        signed: Signedness::Unsigned,
+                        bit_width: 0,
+                        signedness: Signedness::Unsigned,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
                 &mut ast::UnresolvedType::VarintSigned(VarintSigned(bits)) => {
                     let res = Type::Varint(Integer {
-                        bits,
-                        signed: Signedness::Signed,
+                        bit_width: bits,
+                        signedness: Signedness::Signed,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
                 &mut ast::UnresolvedType::VarintUnsigned(VarintUnsigned(bits)) => {
                     let res = Type::Varint(Integer {
-                        bits,
-                        signed: Signedness::Unsigned,
+                        bit_width: bits,
+                        signedness: Signedness::Unsigned,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
@@ -126,7 +126,7 @@ impl Schema {
     }
     pub fn from_ast(mut typedefs: Vec<TypeDef>) -> Result<Self, Error> {
         let mut result = Self::new();
-        let mut resolved = HashMap::new();
+        let mut resolved = AHashMap::new();
 
         while resolved.len() != typedefs.len() {
             let mut iter_resolved = 0;
@@ -136,13 +136,15 @@ impl Schema {
                         TypeDefValue::Primitive(ty) => {
                             let name = name.clone();
                             let rhs = match ty {
-                                &mut ast::Primitive::Signed(Signed(bits)) => {
-                                    Primitive { name, bits }
-                                }
-                                &mut ast::Primitive::Unsigned(Unsigned(bits)) => {
-                                    Primitive { name, bits }
-                                }
-                                ast::Primitive::Void => Primitive { name, bits: 0 },
+                                &mut ast::Primitive::Signed(Signed(bits)) => Primitive {
+                                    name,
+                                    bit_width: bits,
+                                },
+                                &mut ast::Primitive::Unsigned(Unsigned(bits)) => Primitive {
+                                    name,
+                                    bit_width: bits,
+                                },
+                                ast::Primitive::Void => Primitive { name, bit_width: 0 },
                             };
                             let handle = result.define(Definition::Primitive(rhs));
                             iter_resolved += 1;
@@ -196,11 +198,11 @@ impl Schema {
                         }
                         &mut TypeDefValue::Union {
                             ref kind,
-                            tag: ast::Unsigned(tag_bits),
+                            discriminant_bit_width: ast::Unsigned(bit_width),
                             ref mut members,
                         } => {
-                            if tag_bits % 8 != 0 {
-                                Err(Error::InvalidTagBits(tag_bits))?
+                            if bit_width % 8 != 0 {
+                                Err(Error::InvalidDiscriminantBitWidth(bit_width))?
                             }
                             for member in &mut members[..] {
                                 if let None = result.resolve(
@@ -213,47 +215,46 @@ impl Schema {
                                 }
                             }
                             let mut resolved_members = Vec::with_capacity(members.len());
-                            let mut assigned_tags = BTreeSet::new();
-                            let tag_max = match kind {
-                                ast::UnionKind::Enum => (1 << tag_bits) - 1,
-                                ast::UnionKind::Dict => tag_bits as _,
-                            };
-                            let mut tag_counter = match kind {
-                                ast::UnionKind::Enum => 0,
-                                ast::UnionKind::Dict => 1,
-                            };
+                            let mut assigned_discriminants = AHashSet::new();
+                            let discriminant_max = match kind {
+                                ast::UnionKind::Enum => 1 << bit_width,
+                                ast::UnionKind::Dict => bit_width as _,
+                            } - 1;
+                            let mut counter = 0;
                             for member in members {
                                 let ty = member.ty.as_ref().unwrap().resolved().unwrap();
-                                let tag = match member.tag {
+                                let discriminant = match member.discriminant {
                                     Some(x) => {
-                                        let result = x.max(tag_counter);
-                                        tag_counter = result;
+                                        let result = x.max(counter);
+                                        counter = result;
                                         result
                                     }
-                                    None => tag_counter,
+                                    None => counter,
                                 };
-                                if !assigned_tags.insert(tag) {
-                                    Err(Error::TagAssignedMoreThanOnce)?
+                                if !assigned_discriminants.insert(discriminant) {
+                                    Err(Error::DiscriminantAssignedMoreThanOnce)?
                                 }
-                                if tag > tag_max {
-                                    Err(Error::TagValueOutOfRange)?
+                                if discriminant > discriminant_max {
+                                    Err(Error::DiscriminantValueOutOfRange)?
                                 }
                                 resolved_members.push(TaggedMember {
-                                    name: member.name.clone(),
-                                    tag,
-                                    ty,
+                                    member: Member {
+                                        name: member.name.clone(),
+                                        ty,
+                                    },
+                                    discriminant,
                                 });
-                                tag_counter += 1;
+                                counter += 1;
                             }
                             let handle = match kind {
                                 ast::UnionKind::Enum => result.define(Definition::Enum(Enum {
                                     name: name.clone(),
-                                    tag_bits,
+                                    discriminant_bit_width: bit_width,
                                     members: resolved_members,
                                 })),
                                 ast::UnionKind::Dict => result.define(Definition::Dict(Dict {
                                     name: name.clone(),
-                                    tag_bits,
+                                    discriminant_bit_width: bit_width,
                                     members: resolved_members,
                                 })),
                             };
@@ -289,31 +290,53 @@ pub enum Type {
     Definition(Handle),
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum BitSize {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BitSize {
     Fixed(u16),
     Variable,
 }
 
+impl Sum for BitSize {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        let mut sum = 0;
+        for size in iter {
+            match size {
+                Self::Fixed(x) => sum += x,
+                Self::Variable => return Self::Variable,
+            }
+        }
+        Self::Fixed(sum)
+    }
+}
+
 impl BitSize {
-    fn validate(self) -> Result<(), Error> {
+    pub fn fixed(self) -> Option<u16> {
+        match self {
+            Self::Fixed(x) => Some(x),
+            Self::Variable => None,
+        }
+    }
+
+    pub fn validate_byte_alignment(self) -> Result<(), Error> {
         match self {
             Self::Fixed(x) => {
                 if x % 8 == 0 {
                     Ok(())
                 } else {
-                    Err(Error::ElementNotByteAligned)
+                    Err(Error::NotByteAligned)
                 }
             }
-            Self::Variable => Err(Error::VariableSize),
+            Self::Variable => Err(Error::UnknownSize),
         }
     }
 }
 
 impl Type {
-    fn bit_size(self, schema: &Schema) -> BitSize {
+    pub fn bit_size(self, schema: &Schema) -> BitSize {
         match self {
-            Self::Integer(Integer { bits, .. }) => BitSize::Fixed(bits),
+            Self::Integer(Integer {
+                bit_width: bits, ..
+            }) => BitSize::Fixed(bits),
             Self::Varint(_) => BitSize::Variable,
             Self::Definition(Handle(idx)) => schema.definitions[idx].bit_size(schema),
         }
@@ -344,7 +367,9 @@ impl PartialEq for Definition {
 impl Definition {
     fn bit_size(&self, schema: &Schema) -> BitSize {
         match self {
-            &Self::Primitive(Primitive { bits, .. }) => BitSize::Fixed(bits),
+            &Self::Primitive(Primitive {
+                bit_width: bits, ..
+            }) => BitSize::Fixed(bits),
             Self::Vector(_) | Self::Stream(_) | Self::Struct(_) => BitSize::Variable,
             Self::Packed(packed) => packed.bit_size(schema),
             Self::Enum(e) => e.bit_size(schema),
@@ -354,9 +379,9 @@ impl Definition {
     fn validate(&self, schema: &Schema) -> Result<(), Error> {
         match self {
             Definition::Vector(Vector { element_type, .. }) => {
-                element_type.bit_size(schema).validate()
+                element_type.bit_size(schema).validate_byte_alignment()
             }
-            Definition::Packed(packed) => packed.bit_size(schema).validate(),
+            Definition::Packed(packed) => packed.bit_size(schema).validate_byte_alignment(),
             _ => Ok(()),
         }
     }
@@ -364,19 +389,19 @@ impl Definition {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Integer {
-    bits: u16,
-    signed: Signedness,
+    pub bit_width: u16,
+    pub signedness: Signedness,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Signedness {
+pub enum Signedness {
     Signed,
     Unsigned,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LenType {
-    pub bits: u16,
+    pub bit_width: u16,
     pub format: LenTypeFormat,
 }
 
@@ -384,18 +409,18 @@ impl LenType {
     fn from_ast(x: ast::LenType) -> Self {
         match x {
             ast::LenType::Unsigned(Unsigned(bits)) => LenType {
-                bits,
+                bit_width: bits,
                 format: LenTypeFormat::Fixed,
             },
             ast::LenType::VarintUnsigned(VarintUnsigned(bits)) => LenType {
-                bits,
+                bit_width: bits,
                 format: LenTypeFormat::Varint,
             },
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LenTypeFormat {
     Fixed,
     Varint,
@@ -403,8 +428,8 @@ pub enum LenTypeFormat {
 
 #[derive(Debug)]
 pub struct Primitive {
-    pub name: Identifier,
-    pub bits: u16,
+    pub name: Ident,
+    pub bit_width: u16,
 }
 
 #[derive(Debug, PartialEq)]
@@ -421,39 +446,35 @@ pub struct Stream {
 
 #[derive(Debug)]
 pub struct Packed {
-    pub name: Identifier,
+    pub name: Ident,
     pub members: Vec<Member>,
 }
 
 impl Packed {
     fn bit_size(&self, schema: &Schema) -> BitSize {
-        let mut sum = 0;
-        for member in &self.members {
-            match member.ty.bit_size(schema) {
-                BitSize::Fixed(size) => sum += size,
-                BitSize::Variable => return BitSize::Variable,
-            }
-        }
-        BitSize::Fixed(sum)
+        self.members
+            .iter()
+            .map(|member| member.ty.bit_size(schema))
+            .sum()
     }
 }
 
 #[derive(Debug)]
 pub struct Struct {
-    pub name: Identifier,
+    pub name: Ident,
     pub members: Vec<Member>,
 }
 
 #[derive(Debug)]
 pub struct Member {
-    pub name: Identifier,
+    pub name: Ident,
     pub ty: Type,
 }
 
 #[derive(Debug)]
 pub struct Enum {
-    pub name: Identifier,
-    pub tag_bits: u16,
+    pub name: Ident,
+    pub discriminant_bit_width: u16,
     pub members: Vec<TaggedMember>,
 }
 
@@ -461,10 +482,10 @@ impl Enum {
     fn member_bit_size(&self, schema: &Schema) -> BitSize {
         let mut members = self.members.iter();
         match members.next() {
-            Some(member) => match member.ty.bit_size(schema) {
+            Some(member) => match member.member.ty.bit_size(schema) {
                 BitSize::Fixed(size) => {
                     for member in members {
-                        match member.ty.bit_size(schema) {
+                        match member.member.ty.bit_size(schema) {
                             BitSize::Fixed(x) => {
                                 if x != size {
                                     return BitSize::Variable;
@@ -482,7 +503,7 @@ impl Enum {
     }
     fn bit_size(&self, schema: &Schema) -> BitSize {
         match self.member_bit_size(schema) {
-            BitSize::Fixed(size) => BitSize::Fixed(size + self.tag_bits),
+            BitSize::Fixed(size) => BitSize::Fixed(size + self.discriminant_bit_width),
             BitSize::Variable => BitSize::Variable,
         }
     }
@@ -490,8 +511,8 @@ impl Enum {
 
 #[derive(Debug)]
 pub struct Dict {
-    pub name: Identifier,
-    pub tag_bits: u16,
+    pub name: Ident,
+    pub discriminant_bit_width: u16,
     pub members: Vec<TaggedMember>,
 }
 
@@ -500,9 +521,9 @@ impl Dict {
         if self
             .members
             .iter()
-            .all(|member| member.ty.bit_size(schema) == BitSize::Fixed(0))
+            .all(|member| member.member.ty.bit_size(schema) == BitSize::Fixed(0))
         {
-            BitSize::Fixed(self.tag_bits)
+            BitSize::Fixed(self.discriminant_bit_width)
         } else {
             BitSize::Variable
         }
@@ -511,7 +532,6 @@ impl Dict {
 
 #[derive(Debug)]
 pub struct TaggedMember {
-    pub name: Identifier,
-    pub tag: u64,
-    pub ty: Type,
+    pub member: Member,
+    pub discriminant: u64,
 }
