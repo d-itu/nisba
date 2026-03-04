@@ -115,7 +115,7 @@ use pest::{
 
 mod parser {
     #[derive(pest_derive::Parser)]
-    #[grammar = "nis.pest"]
+    #[grammar = "nisba.pest"]
     pub struct Parser;
 }
 
