@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, result};
+use core::{marker::PhantomData, result, slice};
 
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
@@ -35,6 +35,10 @@ impl<'a> Encoder<'a> {
             bytes.as_ptr().copy_to_nonoverlapping(self.ptr, bytes.len());
             self.ptr = self.ptr.add(bytes.len());
         }
+    }
+    pub const unsafe fn push_unsigned(&mut self, value: u64, size: usize) {
+        let bytes = value.to_le_bytes();
+        unsafe { self.push_bytes(slice::from_raw_parts(bytes.as_ptr(), size)) };
     }
     pub const unsafe fn push_varint_unsigned(&mut self, mut value: u64) {
         while value >= 0x80 {

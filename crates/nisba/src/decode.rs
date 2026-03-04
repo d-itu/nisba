@@ -51,6 +51,19 @@ impl<'a> Decoder<'a> {
         self.ptr = unsafe { self.ptr.add(len) };
         Ok(bytes)
     }
+    pub const fn next_u8_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        unsafe { Ok(*const_try!(self.next_bytes(N)).as_ptr().cast()) }
+    }
+    pub const unsafe fn next_unsigned(&mut self, size: usize) -> Result<u64> {
+        let mut result = 0u64;
+        let source = const_try!(self.next_bytes(size));
+        unsafe {
+            (&raw mut result)
+                .cast::<u8>()
+                .copy_from_nonoverlapping(source.as_ptr(), source.len());
+        }
+        Ok(u64::from_le(result))
+    }
     pub const fn next_varint_unsigned(&mut self, bit_width: usize) -> Result<u64> {
         let mut value = 0;
         let mut shift = 0;

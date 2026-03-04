@@ -51,17 +51,17 @@ impl Schema {
                         None
                     }
                 }
-                &mut ast::UnresolvedType::Signed(Signed(bits)) => {
+                &mut ast::UnresolvedType::Signed(Signed(bit_width)) => {
                     let res = Type::Integer(Integer {
-                        bit_width: bits,
+                        bit_width,
                         signedness: Signedness::Signed,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
-                &mut ast::UnresolvedType::Unsigned(Unsigned(bits)) => {
+                &mut ast::UnresolvedType::Unsigned(Unsigned(bit_width)) => {
                     let res = Type::Integer(Integer {
-                        bit_width: bits,
+                        bit_width,
                         signedness: Signedness::Unsigned,
                     });
                     *ty = ast::Type::Resolved(res);
@@ -75,17 +75,17 @@ impl Schema {
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
-                &mut ast::UnresolvedType::VarintSigned(VarintSigned(bits)) => {
+                &mut ast::UnresolvedType::VarintSigned(VarintSigned(bit_width)) => {
                     let res = Type::Varint(Integer {
-                        bit_width: bits,
+                        bit_width,
                         signedness: Signedness::Signed,
                     });
                     *ty = ast::Type::Resolved(res);
                     Some(res)
                 }
-                &mut ast::UnresolvedType::VarintUnsigned(VarintUnsigned(bits)) => {
+                &mut ast::UnresolvedType::VarintUnsigned(VarintUnsigned(bit_width)) => {
                     let res = Type::Varint(Integer {
-                        bit_width: bits,
+                        bit_width,
                         signedness: Signedness::Unsigned,
                     });
                     *ty = ast::Type::Resolved(res);
@@ -96,15 +96,16 @@ impl Schema {
                     len_type,
                     item_type,
                 } => {
-                    if let Some(res) = self.resolve(item_type, resolved)? {
+                    if let Some(element_type) = self.resolve(item_type, resolved)? {
+                        let len_type = LenType::from_ast(*len_type)?;
                         let arr = match kind {
                             ast::ArrayKind::Vector => Definition::Vector(Vector {
-                                len_type: LenType::from_ast(*len_type),
-                                element_type: res,
+                                len_type,
+                                element_type,
                             }),
                             ast::ArrayKind::Stream => Definition::Stream(Stream {
-                                len_type: LenType::from_ast(*len_type),
-                                element_type: res,
+                                len_type,
+                                element_type,
                             }),
                         };
                         let res = Type::Definition(
@@ -136,14 +137,12 @@ impl Schema {
                         TypeDefValue::Primitive(ty) => {
                             let name = name.clone();
                             let rhs = match ty {
-                                &mut ast::Primitive::Signed(Signed(bits)) => Primitive {
-                                    name,
-                                    bit_width: bits,
-                                },
-                                &mut ast::Primitive::Unsigned(Unsigned(bits)) => Primitive {
-                                    name,
-                                    bit_width: bits,
-                                },
+                                &mut ast::Primitive::Signed(Signed(bit_width)) => {
+                                    Primitive { name, bit_width }
+                                }
+                                &mut ast::Primitive::Unsigned(Unsigned(bit_width)) => {
+                                    Primitive { name, bit_width }
+                                }
                                 ast::Primitive::Void => Primitive { name, bit_width: 0 },
                             };
                             let handle = result.define(Definition::Primitive(rhs));
@@ -246,15 +245,19 @@ impl Schema {
                                 });
                                 counter += 1;
                             }
+                            let discriminant_size = bit_width as usize / 8;
+                            if bit_width % 8 != 0 {
+                                return Err(Error::NotByteAligned);
+                            }
                             let handle = match kind {
                                 ast::UnionKind::Enum => result.define(Definition::Enum(Enum {
                                     name: name.clone(),
-                                    discriminant_bit_width: bit_width,
+                                    discriminant_size,
                                     members: resolved_members,
                                 })),
                                 ast::UnionKind::Dict => result.define(Definition::Dict(Dict {
                                     name: name.clone(),
-                                    discriminant_bit_width: bit_width,
+                                    discriminant_size,
                                     members: resolved_members,
                                 })),
                             };
@@ -291,12 +294,12 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BitSize {
-    Fixed(u16),
+pub enum BitWidth {
+    Fixed(usize),
     Variable,
 }
 
-impl Sum for BitSize {
+impl Sum for BitWidth {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = 0;
         for size in iter {
@@ -309,15 +312,15 @@ impl Sum for BitSize {
     }
 }
 
-impl BitSize {
-    pub fn fixed(self) -> Option<u16> {
+impl BitWidth {
+    pub fn fixed(self) -> Option<usize> {
         match self {
             Self::Fixed(x) => Some(x),
             Self::Variable => None,
         }
     }
 
-    pub fn validate_byte_alignment(self) -> Result<(), Error> {
+    pub fn fixed_byte_aligned(self) -> Result<(), Error> {
         match self {
             Self::Fixed(x) => {
                 if x % 8 == 0 {
@@ -329,16 +332,21 @@ impl BitSize {
             Self::Variable => Err(Error::UnknownSize),
         }
     }
+
+    pub fn byte_aligned(self) -> Result<(), Error> {
+        match self {
+            Self::Fixed(x) if x % 8 != 0 => Err(Error::NotByteAligned),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Type {
-    pub fn bit_size(self, schema: &Schema) -> BitSize {
+    pub fn bit_width(self, schema: &Schema) -> BitWidth {
         match self {
-            Self::Integer(Integer {
-                bit_width: bits, ..
-            }) => BitSize::Fixed(bits),
-            Self::Varint(_) => BitSize::Variable,
-            Self::Definition(Handle(idx)) => schema.definitions[idx].bit_size(schema),
+            Self::Integer(Integer { bit_width, .. }) => BitWidth::Fixed(bit_width as _),
+            Self::Varint(_) => BitWidth::Variable,
+            Self::Definition(Handle(idx)) => schema.definitions[idx].bit_width(schema),
         }
     }
 }
@@ -365,23 +373,32 @@ impl PartialEq for Definition {
 }
 
 impl Definition {
-    fn bit_size(&self, schema: &Schema) -> BitSize {
+    fn bit_width(&self, schema: &Schema) -> BitWidth {
         match self {
-            &Self::Primitive(Primitive {
-                bit_width: bits, ..
-            }) => BitSize::Fixed(bits),
-            Self::Vector(_) | Self::Stream(_) | Self::Struct(_) => BitSize::Variable,
-            Self::Packed(packed) => packed.bit_size(schema),
-            Self::Enum(e) => e.bit_size(schema),
-            Self::Dict(dict) => dict.bit_size(schema),
+            &Self::Primitive(Primitive { bit_width, .. }) => BitWidth::Fixed(bit_width as _),
+            Self::Vector(_) | Self::Stream(_) | Self::Struct(_) => BitWidth::Variable,
+            Self::Packed(packed) => packed.bit_width(schema),
+            Self::Enum(e) => e.bit_width(schema),
+            Self::Dict(dict) => dict.bit_width(schema),
         }
     }
     fn validate(&self, schema: &Schema) -> Result<(), Error> {
         match self {
             Definition::Vector(Vector { element_type, .. }) => {
-                element_type.bit_size(schema).validate_byte_alignment()
+                element_type.bit_width(schema).fixed_byte_aligned()
             }
-            Definition::Packed(packed) => packed.bit_size(schema).validate_byte_alignment(),
+            Definition::Stream(Stream { element_type, .. }) => {
+                element_type.bit_width(schema).byte_aligned()
+            }
+            Definition::Packed(packed) => packed.bit_width(schema).fixed_byte_aligned(),
+            Definition::Struct(Struct { members, .. }) => members
+                .iter()
+                .try_for_each(|x| x.ty.bit_width(schema).byte_aligned()),
+            Definition::Enum(Enum { members, .. }) | Definition::Dict(Dict { members, .. }) => {
+                members
+                    .iter()
+                    .try_for_each(|x| x.member.ty.bit_width(schema).byte_aligned())
+            }
             _ => Ok(()),
         }
     }
@@ -400,30 +417,32 @@ pub enum Signedness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LenType {
-    pub bit_width: u16,
-    pub format: LenTypeFormat,
+pub enum LenType {
+    Fixed { size: u16 },
+    V16,
+    V32,
+    V64,
 }
 
 impl LenType {
-    fn from_ast(x: ast::LenType) -> Self {
-        match x {
-            ast::LenType::Unsigned(Unsigned(bits)) => LenType {
-                bit_width: bits,
-                format: LenTypeFormat::Fixed,
+    fn from_ast(x: ast::LenType) -> Result<Self, Error> {
+        Ok(match x {
+            ast::LenType::Unsigned(Unsigned(bit_width)) => Self::Fixed {
+                size: {
+                    if bit_width % 8 != 0 {
+                        return Err(Error::NotByteAligned);
+                    }
+                    bit_width / 8
+                },
             },
-            ast::LenType::VarintUnsigned(VarintUnsigned(bits)) => LenType {
-                bit_width: bits,
-                format: LenTypeFormat::Varint,
+            ast::LenType::VarintUnsigned(VarintUnsigned(bit_width)) => match bit_width {
+                16 => Self::V16,
+                32 => Self::V32,
+                64 => Self::V64,
+                _ => return Err(Error::UnsupportedVarintBitWidth),
             },
-        }
+        })
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LenTypeFormat {
-    Fixed,
-    Varint,
 }
 
 #[derive(Debug)]
@@ -451,10 +470,10 @@ pub struct Packed {
 }
 
 impl Packed {
-    fn bit_size(&self, schema: &Schema) -> BitSize {
+    fn bit_width(&self, schema: &Schema) -> BitWidth {
         self.members
             .iter()
-            .map(|member| member.ty.bit_size(schema))
+            .map(|member| member.ty.bit_width(schema))
             .sum()
     }
 }
@@ -474,37 +493,37 @@ pub struct Member {
 #[derive(Debug)]
 pub struct Enum {
     pub name: Ident,
-    pub discriminant_bit_width: u16,
+    pub discriminant_size: usize,
     pub members: Vec<TaggedMember>,
 }
 
 impl Enum {
-    fn member_bit_size(&self, schema: &Schema) -> BitSize {
+    fn member_bit_width(&self, schema: &Schema) -> BitWidth {
         let mut members = self.members.iter();
         match members.next() {
-            Some(member) => match member.member.ty.bit_size(schema) {
-                BitSize::Fixed(size) => {
+            Some(member) => match member.member.ty.bit_width(schema) {
+                BitWidth::Fixed(size) => {
                     for member in members {
-                        match member.member.ty.bit_size(schema) {
-                            BitSize::Fixed(x) => {
+                        match member.member.ty.bit_width(schema) {
+                            BitWidth::Fixed(x) => {
                                 if x != size {
-                                    return BitSize::Variable;
+                                    return BitWidth::Variable;
                                 }
                             }
-                            BitSize::Variable => return BitSize::Variable,
+                            BitWidth::Variable => return BitWidth::Variable,
                         }
                     }
-                    BitSize::Fixed(size)
+                    BitWidth::Fixed(size)
                 }
-                BitSize::Variable => BitSize::Variable,
+                BitWidth::Variable => BitWidth::Variable,
             },
-            None => BitSize::Fixed(0),
+            None => BitWidth::Fixed(0),
         }
     }
-    fn bit_size(&self, schema: &Schema) -> BitSize {
-        match self.member_bit_size(schema) {
-            BitSize::Fixed(size) => BitSize::Fixed(size + self.discriminant_bit_width),
-            BitSize::Variable => BitSize::Variable,
+    fn bit_width(&self, schema: &Schema) -> BitWidth {
+        match self.member_bit_width(schema) {
+            BitWidth::Fixed(size) => BitWidth::Fixed(size + self.discriminant_size * 8),
+            BitWidth::Variable => BitWidth::Variable,
         }
     }
 }
@@ -512,20 +531,20 @@ impl Enum {
 #[derive(Debug)]
 pub struct Dict {
     pub name: Ident,
-    pub discriminant_bit_width: u16,
+    pub discriminant_size: usize,
     pub members: Vec<TaggedMember>,
 }
 
 impl Dict {
-    fn bit_size(&self, schema: &Schema) -> BitSize {
+    fn bit_width(&self, schema: &Schema) -> BitWidth {
         if self
             .members
             .iter()
-            .all(|member| member.member.ty.bit_size(schema) == BitSize::Fixed(0))
+            .all(|member| member.member.ty.bit_width(schema) == BitWidth::Fixed(0))
         {
-            BitSize::Fixed(self.discriminant_bit_width)
+            BitWidth::Fixed(self.discriminant_size * 8)
         } else {
-            BitSize::Variable
+            BitWidth::Variable
         }
     }
 }

@@ -20,6 +20,8 @@ pub enum Error {
     UnknownSize,
     #[error("Unresolved reference")]
     UnresolvedReference,
+    #[error("Unsupported varint bit width")]
+    UnsupportedVarintBitWidth,
 }
 
 pub type Ident = smol_str::SmolStr;

@@ -77,8 +77,8 @@ impl Packed {
         self.members.iter().any(|member| {
             member
                 .ty
-                .bit_size(&ctx.schema)
-                .validate_byte_alignment()
+                .bit_width(&ctx.schema)
+                .fixed_byte_aligned()
                 .is_err()
         })
     }
@@ -89,12 +89,12 @@ impl Packed {
         }
     }
     fn generate_bitfield(&self, ctx: &Context) -> TokenStream {
-        let bit_size: u16 = self
+        let bit_size: usize = self
             .members
             .iter()
-            .map(|member| member.ty.bit_size(&ctx.schema).fixed().unwrap())
+            .map(|member| member.ty.bit_width(&ctx.schema).fixed().unwrap())
             .sum();
-        let byte_size = Literal::usize_unsuffixed(bit_size as usize / 8);
+        let byte_size = Literal::usize_unsuffixed(bit_size / 8);
         let name = self.name.camel_case();
         let impls = match ctx.kind {
             CodeGenKind::Encode => impl_encode(
@@ -267,9 +267,9 @@ impl Enum {
                                 Self::#cons => 0,
                             },
                             _ => {
-                                let expr = ty.prepare(quote!(x), ctx, true);
+                                let expr = ty.prepare(quote!(_x), ctx, true);
                                 quote! {
-                                    Self::#cons(x) => #expr,
+                                    Self::#cons(_x) => #expr,
                                 }
                             }
                         }
@@ -281,14 +281,15 @@ impl Enum {
                          discriminant,
                      }| {
                         let cons = name.camel_case();
-                        let discriminant =
-                            discriminant_literal(self.discriminant_bit_width, discriminant);
+                        let size = Literal::usize_unsuffixed(self.discriminant_size);
                         let discriminant = quote! {
-                            unsafe { w.push_bytes(&#discriminant.to_le_bytes()); }
+                            unsafe {
+                                w.push_unsigned(#discriminant, #size);
+                            }
                         };
                         match ty {
                             Type::Integer(Integer { bit_width, .. }) if bit_width == 0 => quote! {
-                                Self::#cons => { #discriminant },
+                                Self::#cons => #discriminant
                             },
                             _ => {
                                 let expr = ty.encode(quote!(x), ctx);
@@ -302,8 +303,7 @@ impl Enum {
                         }
                     },
                 );
-                let discriminant =
-                    Literal::usize_unsuffixed(self.discriminant_bit_width as usize / 8);
+                let discriminant = Literal::usize_unsuffixed(self.discriminant_size);
                 impl_encode(
                     &name,
                     &lifetime,
@@ -327,8 +327,6 @@ impl Enum {
                          discriminant,
                      }| {
                         let cons = name.camel_case();
-                        let discriminant =
-                            discriminant_literal(self.discriminant_bit_width, discriminant);
                         match ty {
                             Type::Integer(Integer { bit_width, .. }) if bit_width == 0 => quote! {
                                 #discriminant => Self::#cons,
@@ -342,16 +340,12 @@ impl Enum {
                         }
                     },
                 );
-                let discriminant = Integer {
-                    bit_width: self.discriminant_bit_width,
-                    signedness: Signedness::Unsigned,
-                }
-                .decode();
+                let size = self.discriminant_size;
                 impl_decode(
                     &name,
                     lifetime.as_ref(),
                     quote!({
-                        let discriminant = #discriminant;
+                        let discriminant = nisba::const_try!(unsafe { r.next_unsigned(#size) });
                         match discriminant {
                             #(#decode)*
                             _ => return Err(nisba::decode::Error::UnknownDiscriminant {
@@ -381,10 +375,10 @@ impl Dict {
             true,
         );
         let ty = res.quote();
+        let size = self.discriminant_size;
         let impls = match ctx.kind {
             CodeGenKind::Encode => {
-                let discriminant_size =
-                    Literal::usize_unsuffixed(self.discriminant_bit_width as usize / 8);
+                let discriminant_size = Literal::usize_unsuffixed(self.discriminant_size);
                 let prepare = self.members.iter().map(
                     |TaggedMember {
                          member: Member { name, ty },
@@ -401,7 +395,7 @@ impl Dict {
                         }
                     },
                 );
-                let encode_discriminant = self.members.iter().map(
+                let bitmap = self.members.iter().map(
                     |&TaggedMember {
                          member: Member { ref name, .. },
                          discriminant,
@@ -436,14 +430,12 @@ impl Dict {
                         }
                     },
                 );
-                let init = discriminant_literal(self.discriminant_bit_width, 0);
                 impl_encode(
                     res.name,
                     res.lifetime,
                     quote! { #discriminant_size #( + #prepare)* },
                     quote! {
-                        let discriminant = #init #( | #encode_discriminant)*;
-                        unsafe { w.push_bytes(&discriminant.to_le_bytes()); }
+                        unsafe { w.push_unsigned(0 #( | #bitmap)*, #size); }
                         #(#encode)*
                     },
                     quote!(),
@@ -467,16 +459,11 @@ impl Dict {
                         }
                     },
                 );
-                let bitmap = Integer {
-                    bit_width: self.discriminant_bit_width,
-                    signedness: Signedness::Unsigned,
-                }
-                .decode();
                 impl_decode(
                     &res.name,
                     res.lifetime.as_ref(),
                     quote!({
-                        let bitmap = #bitmap;
+                        let bitmap = nisba::const_try!(unsafe { r.next_unsigned(#size) });
                         Self {
                             #(#decode)*
                         }
@@ -493,13 +480,12 @@ impl Dict {
 
 impl LenType {
     fn prepare(self, expr: TokenStream) -> TokenStream {
-        let LenType { bit_width, format } = self;
-        match format {
-            LenTypeFormat::Fixed => {
-                let size = Literal::usize_unsuffixed(bit_width as usize / 8);
+        match self {
+            LenType::Fixed { size } => {
+                let size = Literal::usize_unsuffixed(size as _);
                 quote!(#size)
             }
-            LenTypeFormat::Varint => {
+            _ => {
                 quote! {
                     nisba::encode::varint_calc_size_unsigned(#expr as _)
                 }
@@ -507,11 +493,10 @@ impl LenType {
         }
     }
     fn encode(self, expr: TokenStream) -> TokenStream {
-        let LenType { bit_width, format } = self;
-        match format {
-            LenTypeFormat::Fixed => {
+        match self {
+            LenType::Fixed { size } => {
                 let ty = Integer {
-                    bit_width,
+                    bit_width: size * 8,
                     signedness: Signedness::Unsigned,
                 }
                 .type_name();
@@ -519,25 +504,32 @@ impl LenType {
                     unsafe { w.push_bytes(&(#expr as #ty).to_le_bytes()); }
                 }
             }
-            LenTypeFormat::Varint => quote! {
+            _ => quote! {
                 unsafe { w.push_varint_unsigned(#expr as _) }
             },
         }
     }
     fn decode(self) -> TokenStream {
-        let LenType { bit_width, format } = self;
-        let integer = Integer {
-            bit_width,
-            signedness: Signedness::Unsigned,
-        };
-        let expr = match format {
-            LenTypeFormat::Fixed => integer.decode(),
-            LenTypeFormat::Varint => integer.decode_varint(),
-        };
-        quote!(#expr as usize)
+        match self {
+            LenType::Fixed { size } => {
+                let size = size as usize;
+                quote!(nisba::const_try!(unsafe { r.next_unsigned(#size) }) as usize)
+            }
+            LenType::V16 => quote!(nisba::const_try!(r.next_varint_unsigned(16)) as usize),
+            LenType::V32 => quote!(nisba::const_try!(r.next_varint_unsigned(32)) as usize),
+            LenType::V64 => quote!(nisba::const_try!(r.next_varint_unsigned(64)) as usize),
+        }
     }
-    fn max_size(&self) -> Literal {
-        Literal::usize_unsuffixed((1usize << self.bit_width - 1).wrapping_sub(1))
+    fn bit_width(self) -> u16 {
+        match self {
+            LenType::Fixed { size } => size * 8,
+            LenType::V16 => 16,
+            LenType::V32 => 32,
+            LenType::V64 => 64,
+        }
+    }
+    fn max_size(self) -> Literal {
+        Literal::usize_unsuffixed((1usize << self.bit_width() - 1).wrapping_sub(1))
     }
 }
 
@@ -696,8 +688,8 @@ struct TypeGenResult {
 }
 
 impl Integer {
-    fn type_name(self) -> TokenStream {
-        let Integer {
+    fn rust_integer(self) -> proc_macro2::Ident {
+        let Self {
             bit_width,
             signedness,
         } = self;
@@ -705,25 +697,52 @@ impl Integer {
             Signedness::Signed => 'i',
             Signedness::Unsigned => 'u',
         };
-        if bit_width == 0 {
-            quote!(())
-        } else {
-            let id =
-                proc_macro2::Ident::new(&format!("{signedness}{bit_width}"), Span::call_site());
-            quote!(#id)
+        proc_macro2::Ident::new(&format!("{signedness}{bit_width}"), Span::call_site())
+    }
+    fn type_name(self) -> TokenStream {
+        match self.bit_width {
+            0 => quote!(()),
+            8 | 16 | 32 | 64 | 128 => self.rust_integer().to_token_stream(),
+            _ => {
+                let size = self.bit_width as usize / 8;
+                quote!([u8; #size])
+            }
+        }
+    }
+    fn encode(self, expr: impl ToTokens) -> TokenStream {
+        match self.bit_width {
+            0 => quote!(),
+            8 | 16 | 32 | 64 | 128 => quote! {
+                unsafe { w.push_bytes(&#expr.to_le_bytes()); }
+            },
+            _ => quote! {
+                unsafe { w.push_bytes(#expr); }
+            },
         }
     }
     fn decode(self) -> TokenStream {
-        let ty = self.type_name();
-        let size = Literal::usize_unsuffixed(self.bit_width as usize / 8);
-        quote! { #ty::from_le_bytes(unsafe { *nisba::const_try!(r.next_bytes(#size)).as_ptr().cast() }) }
+        match self.bit_width {
+            0 => quote!(()),
+            8 | 16 | 32 | 64 | 128 => {
+                let ty = self.type_name();
+                quote! {
+                    #ty::from_le_bytes(nisba::const_try!(r.next_u8_array()))
+                }
+            }
+            _ => {
+                let size = self.bit_width as usize / 8;
+                quote! {
+                    nisba::const_try!(r.next_u8_array::<#size>())
+                }
+            }
+        }
     }
     fn decode_varint(self) -> TokenStream {
         let Self {
             bit_width,
             signedness,
         } = self;
-        let ty = self.type_name();
+        let ty = self.rust_integer();
         let bit_width = Literal::usize_unsuffixed(bit_width as _);
         match signedness {
             Signedness::Signed => quote! {
@@ -889,15 +908,7 @@ impl Type {
 
     fn encode(self, expr: TokenStream, ctx: &Context) -> TokenStream {
         match self {
-            Type::Integer(Integer { bit_width, .. }) => {
-                if bit_width == 0 {
-                    quote! {}
-                } else {
-                    quote! {
-                        unsafe { w.push_bytes(&#expr.to_le_bytes()); }
-                    }
-                }
-            }
+            Type::Integer(integer) => integer.encode(expr),
             Type::Varint(_) => quote! {
                 unsafe { w.push_varint_unsigned(*#expr as _); }
             },
@@ -996,16 +1007,6 @@ impl Type {
                 }
             },
         }
-    }
-}
-
-fn discriminant_literal(bit_width: u16, value: u64) -> Literal {
-    match bit_width {
-        8 => Literal::u8_suffixed(value as _),
-        16 => Literal::u16_suffixed(value as _),
-        32 => Literal::u32_suffixed(value as _),
-        64 => Literal::u64_suffixed(value),
-        _ => unreachable!(),
     }
 }
 
