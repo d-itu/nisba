@@ -27,5 +27,5 @@ pub enum Error {
 pub type Ident = smol_str::SmolStr;
 
 pub mod ast;
-pub mod backend;
+pub mod back;
 pub mod schema;
