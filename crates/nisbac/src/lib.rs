@@ -22,6 +22,8 @@ pub enum Error {
     UnknownType(Vec<Ident>),
     #[error("Unsupported varint bit width")]
     UnsupportedVarintBitWidth,
+    #[error("Length integer exceeds maximum bit width of 64")]
+    LengthTypeIntegerTooBig,
 }
 
 pub type Ident = smol_str::SmolStr;

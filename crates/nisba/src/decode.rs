@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, mem, result, slice};
+use core::{fmt::Debug, marker::PhantomData, mem, result, slice};
 
 use thiserror::Error;
 
@@ -93,19 +93,72 @@ pub unsafe trait Decode<'a>: Sized {
     fn decode(r: &mut Decoder<'a>) -> Result<Self>;
 }
 
-pub struct Vector<'a, T> {
-    ptr: *const u8,
-    len: usize,
-    marker: PhantomData<&'a [T]>,
+trait Length: for<'a> Decode<'a> {
+    fn value(self) -> u64;
 }
 
-impl<'a, T> Vector<'a, T> {
+pub struct Integer<const N: usize>(u64);
+
+unsafe impl<const N: usize> Decode<'_> for Integer<N> {
+    fn decode(r: &mut Decoder) -> Result<Self> {
+        unsafe { r.next_unsigned(N).map(Self) }
+    }
+}
+
+impl<const N: usize> Length for Integer<N> {
+    fn value(self) -> u64 {
+        self.0
+    }
+}
+
+pub struct Varint<T> {
+    value: u64,
+    marker: PhantomData<T>,
+}
+
+unsafe impl<T> Decode<'_> for Varint<T> {
+    fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+        let value = r.next_varint_unsigned(mem::size_of::<T>() * 8)?;
+        Ok(Self {
+            value,
+            marker: PhantomData,
+        })
+    }
+}
+
+impl<T> Length for Varint<T> {
+    fn value(self) -> u64 {
+        self.value
+    }
+}
+
+pub struct Vector<'a, T, L> {
+    ptr: *const u8,
+    len: usize,
+    marker: PhantomData<(&'a [T], L)>,
+}
+
+impl<T, L> Clone for Vector<'_, T, L> {
+    fn clone(&self) -> Self {
+        Self::new(self.as_bytes())
+    }
+}
+
+impl<T, L> Copy for Vector<'_, T, L> {}
+
+impl<'a, T, L> Vector<'a, T, L> {
     pub const fn new(data: &'a [u8]) -> Self {
         Self {
             ptr: data.as_ptr(),
             len: data.len(),
             marker: PhantomData,
         }
+    }
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+    pub const fn len(&self) -> usize {
+        self.len / mem::size_of::<T>()
     }
     pub const fn get(&self, index: usize) -> Option<T> {
         if index >= self.len {
@@ -130,29 +183,101 @@ impl<'a, T> Vector<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for Vector<'a, T> {
+impl<'a, T, L> Iterator for Vector<'a, T, L> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
 }
 
-pub struct Stream<'a, T> {
+impl<'a, T, L> ExactSizeIterator for Vector<'a, T, L> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<'a, T, const N: usize> Vector<'a, T, Integer<N>> {
+    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let len = unsafe { const_try!(r.next_unsigned(N)) };
+        let data = const_try!(r.next_bytes(len as usize));
+        Ok(Self::new(data))
+    }
+}
+
+impl<'a, T, I> Vector<'a, T, Varint<I>> {
+    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let len = const_try!(r.next_varint_unsigned(mem::size_of::<T>()));
+        let data = const_try!(r.next_bytes(len as usize));
+        Ok(Self::new(data))
+    }
+}
+
+unsafe impl<'a, T, L: Length> Decode<'a> for Vector<'a, T, L> {
+    fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let count: L = r.next()?;
+        let len = count.value() as usize * mem::size_of::<T>();
+        let data = r.next_bytes(len)?;
+        Ok(Self::new(data))
+    }
+}
+
+impl<T: Debug, L> Debug for Vector<'_, T, L> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(*self).finish()
+    }
+}
+
+pub struct Stream<'a, T, L> {
     decoder: Decoder<'a>,
-    marker: PhantomData<T>,
+    marker: PhantomData<(T, L)>,
 }
 
-impl<'a, T> Stream<'a, T> {
-    pub const fn new(data: &'a [u8]) -> Self {
+impl<T, L> Clone for Stream<'_, T, L> {
+    fn clone(&self) -> Self {
         Self {
-            decoder: Decoder::new(data),
+            decoder: self.decoder,
             marker: PhantomData,
         }
     }
 }
 
-impl<'a, T: Decode<'a>> Iterator for Stream<'a, T> {
+impl<T, L> Copy for Stream<'_, T, L> {}
+
+impl<'a, T, L> Stream<'a, T, L> {
+    pub const fn new(decoder: Decoder<'a>) -> Self {
+        Self {
+            decoder,
+            marker: PhantomData,
+        }
+    }
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.decoder.remaining()
+    }
+}
+
+impl<'a, T, const N: usize> Stream<'a, T, Integer<N>> {
+    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let len = unsafe { const_try!(r.next_unsigned(N)) };
+        let bytes = const_try!(r.next_bytes(len as _));
+        Ok(Self::new(Decoder::new(bytes)))
+    }
+}
+
+impl<'a, T, I> Stream<'a, T, Varint<I>> {
+    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let len = const_try!(r.next_varint_unsigned(mem::size_of::<T>()));
+        let bytes = const_try!(r.next_bytes(len as _));
+        Ok(Self::new(Decoder::new(bytes)))
+    }
+}
+
+impl<'a, T: Decode<'a>, L> Iterator for Stream<'a, T, L> {
     type Item = Result<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -161,4 +286,22 @@ impl<'a, T: Decode<'a>> Iterator for Stream<'a, T> {
         }
         Some(self.decoder.next())
     }
+}
+
+unsafe impl<'a, T: Decode<'a>, L: Length> Decode<'a> for Stream<'a, T, L> {
+    fn decode(r: &mut Decoder<'a>) -> Result<Self> {
+        let len: L = r.next()?;
+        let bytes = r.next_bytes(len.value() as _)?;
+        Ok(Self::new(Decoder::new(bytes)))
+    }
+}
+
+impl<'a, T: Debug + Decode<'a>, L> Debug for Stream<'a, T, L> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(*self).finish()
+    }
+}
+
+pub fn decode<'a, T: Decode<'a>>(data: &'a [u8]) -> Result<T> {
+    Decoder::new(data).next()
 }

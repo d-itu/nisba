@@ -116,6 +116,7 @@ impl Packed {
         };
         quote! {
             #[repr(transparent)]
+            #[derive(Debug)]
             pub struct #name(pub [u8; #byte_size]);
             #impls
         }
@@ -358,6 +359,7 @@ impl Enum {
             }
         };
         quote! {
+            #[derive(Debug)]
             pub enum #name #lifetime {
                 #members
             }
@@ -479,6 +481,17 @@ impl Dict {
 }
 
 impl LenType {
+    fn type_name(self) -> TokenStream {
+        match self {
+            LenType::Fixed { size } => {
+                let n = Literal::usize_unsuffixed(size as _);
+                quote!(::nisba::decode::Integer::<#n>)
+            }
+            LenType::V16 => quote!(::nisba::decode::Varint::<u16>),
+            LenType::V32 => quote!(::nisba::decode::Varint::<u32>),
+            LenType::V64 => quote!(::nisba::decode::Varint::<u64>),
+        }
+    }
     fn prepare(self, expr: TokenStream) -> TokenStream {
         match self {
             LenType::Fixed { size } => {
@@ -496,7 +509,7 @@ impl LenType {
         match self {
             LenType::Fixed { size } => {
                 let ty = Integer {
-                    bit_width: size * 8,
+                    bit_width: size as u16 * 8,
                     signedness: Signedness::Unsigned,
                 }
                 .type_name();
@@ -509,20 +522,9 @@ impl LenType {
             },
         }
     }
-    fn decode(self) -> TokenStream {
-        match self {
-            LenType::Fixed { size } => {
-                let size = size as usize;
-                quote!(::nisba::const_try!(unsafe { r.next_unsigned(#size) }) as usize)
-            }
-            LenType::V16 => quote!(::nisba::const_try!(r.next_varint_unsigned(16)) as usize),
-            LenType::V32 => quote!(::nisba::const_try!(r.next_varint_unsigned(32)) as usize),
-            LenType::V64 => quote!(::nisba::const_try!(r.next_varint_unsigned(64)) as usize),
-        }
-    }
     fn bit_width(self) -> u16 {
         match self {
-            LenType::Fixed { size } => size * 8,
+            LenType::Fixed { size } => size as u16 * 8,
             LenType::V16 => 16,
             LenType::V32 => 32,
             LenType::V64 => 64,
@@ -593,6 +595,7 @@ impl StructGen {
             fields,
         } = self;
         quote! {
+            #[derive(Debug)]
             pub struct #name #lifetime {
                 #fields
             }
@@ -755,6 +758,53 @@ impl Integer {
     }
 }
 
+enum Sequence {
+    Vector,
+    Stream,
+}
+
+impl Sequence {
+    fn name_encode(element_type: Type, ctx: &Context) -> TypeGenResult {
+        let TypeGenResult {
+            token_stream: ty,
+            has_lifetime,
+        } = element_type.generate(ctx);
+        match has_lifetime {
+            false => TypeGenResult {
+                token_stream: quote!(Vec<#ty>),
+                has_lifetime,
+            },
+            true => TypeGenResult {
+                token_stream: quote!(Vec<#ty<'a>>),
+                has_lifetime,
+            },
+        }
+    }
+    fn name_decode(self, element_type: Type, len_type: LenType, ctx: &Context) -> TokenStream {
+        let len = len_type.type_name();
+        let ty = element_type.generate(ctx).token_stream;
+        match self {
+            Sequence::Vector => quote!(::nisba::decode::Vector::<'a, #ty, #len>),
+            Sequence::Stream => quote!(::nisba::decode::Stream::<'a, #ty, #len>),
+        }
+    }
+    fn decode(self, element_type: Type, len_type: LenType, ctx: &Context) -> TokenStream {
+        let ty = self.name_decode(element_type, len_type, ctx);
+        quote! {
+            unsafe { ::nisba::const_try!(#ty::decode(r)) }
+        }
+    }
+    fn type_name(self, element_type: Type, len_type: LenType, ctx: &Context) -> TypeGenResult {
+        match ctx.kind {
+            CodeGenKind::Encode => Self::name_encode(element_type, ctx),
+            CodeGenKind::Decode => TypeGenResult {
+                token_stream: self.name_decode(element_type, len_type, ctx),
+                has_lifetime: true,
+            },
+        }
+    }
+}
+
 impl Type {
     fn generate(self, ctx: &Context) -> TypeGenResult {
         match self {
@@ -787,46 +837,14 @@ impl Type {
                         }
                     }
                 }
-                Definition::Vector(Vector { element_type, .. }) => {
-                    let TypeGenResult {
-                        token_stream: ty,
-                        has_lifetime,
-                    } = element_type.generate(ctx);
-                    match (ctx.kind, has_lifetime) {
-                        (CodeGenKind::Encode, false) => TypeGenResult {
-                            token_stream: quote!(Vec<#ty>),
-                            has_lifetime,
-                        },
-                        (CodeGenKind::Encode, true) => TypeGenResult {
-                            token_stream: quote!(Vec<#ty<'a>>),
-                            has_lifetime,
-                        },
-                        (CodeGenKind::Decode, _) => TypeGenResult {
-                            token_stream: quote!(::nisba::decode::Vector<'a, #ty>),
-                            has_lifetime: true,
-                        },
-                    }
-                }
-                Definition::Stream(Stream { element_type, .. }) => {
-                    let TypeGenResult {
-                        token_stream: ty,
-                        has_lifetime,
-                    } = element_type.generate(ctx);
-                    match (ctx.kind, has_lifetime) {
-                        (CodeGenKind::Encode, false) => TypeGenResult {
-                            token_stream: quote!(Vec<#ty>),
-                            has_lifetime,
-                        },
-                        (CodeGenKind::Encode, true) => TypeGenResult {
-                            token_stream: quote!(Vec<#ty<'a>>),
-                            has_lifetime,
-                        },
-                        (CodeGenKind::Decode, _) => TypeGenResult {
-                            token_stream: quote!(::nisba::decode::Stream<'a, #ty>),
-                            has_lifetime: true,
-                        },
-                    }
-                }
+                &Definition::Vector(Vector {
+                    element_type,
+                    len_type,
+                }) => Sequence::Vector.type_name(element_type, len_type, ctx),
+                &Definition::Stream(Stream {
+                    element_type,
+                    len_type,
+                }) => Sequence::Stream.type_name(element_type, len_type, ctx),
             },
         }
     }
@@ -950,6 +968,7 @@ impl Type {
                             byte_count += #count;
                         }
                         #len
+                        let mut iter = #expr.iter();
                         while let Some(x) = iter.next() {
                             #elems
                         }
@@ -981,21 +1000,11 @@ impl Type {
                 &Definition::Vector(Vector {
                     len_type,
                     element_type,
-                }) => {
-                    let len = len_type.decode();
-                    let ty = fixed_sized_ty(element_type, ctx);
-                    quote! ({
-                        let len = #len;
-                        ::nisba::decode::Vector::new(::nisba::const_try!(r.next_bytes(len * ::core::mem::size_of::<#ty>())))
-                    })
-                }
-                Definition::Stream(Stream { len_type, .. }) => {
-                    let len = len_type.decode();
-                    quote! ({
-                        let len = #len;
-                        ::nisba::decode::Stream::new(::nisba::const_try!(r.next_bytes(len)))
-                    })
-                }
+                }) => Sequence::Vector.decode(element_type, len_type, ctx),
+                &Definition::Stream(Stream {
+                    len_type,
+                    element_type,
+                }) => Sequence::Stream.decode(element_type, len_type, ctx),
                 Definition::Packed(Packed { name, .. })
                 | Definition::Struct(Struct { name, .. })
                 | Definition::Enum(Enum { name, .. })

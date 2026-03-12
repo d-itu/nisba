@@ -426,7 +426,7 @@ pub enum Signedness {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LenType {
-    Fixed { size: u16 },
+    Fixed { size: u8 },
     V16,
     V32,
     V64,
@@ -440,7 +440,10 @@ impl LenType {
                     if bit_width % 8 != 0 {
                         return Err(Error::NotByteAligned);
                     }
-                    bit_width / 8
+                    if bit_width > 64 {
+                        return Err(Error::LengthTypeIntegerTooBig);
+                    }
+                    bit_width as u8 / 8
                 },
             },
             ast::LenType::VarintUnsigned(VarintUnsigned(bit_width)) => match bit_width {
