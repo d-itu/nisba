@@ -274,7 +274,15 @@ impl Schema {
                 }
             }
             if iter_resolved == 0 {
-                Err(Error::UnresolvedReference)?
+                return Err(Error::UnknownType(
+                    typedefs
+                        .into_iter()
+                        .filter_map(|x| match x {
+                            TypeDef::Unresolved { name, .. } => Some(name),
+                            TypeDef::Resolved(_) => None,
+                        })
+                        .collect(),
+                ));
             }
         }
 

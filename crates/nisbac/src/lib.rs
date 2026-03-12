@@ -18,8 +18,8 @@ pub enum Error {
     NotByteAligned,
     #[error("Size must be known at compilation time")]
     UnknownSize,
-    #[error("Unresolved reference")]
-    UnresolvedReference,
+    #[error("Field containing unknown type")]
+    UnknownType(Vec<Ident>),
     #[error("Unsupported varint bit width")]
     UnsupportedVarintBitWidth,
 }
