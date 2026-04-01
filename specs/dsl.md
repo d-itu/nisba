@@ -209,10 +209,10 @@ definition := primitive | struct-like | indexed-struct-like
 
 primitive := "@primitive" ws* "(" ws* builtin ws* ")" ws* valid-name
 
-struct-like := ("@strcut" | "@packed") ws+ valid-name ws* "{" ws* (member | ws*)* "}"
+struct-like := ("@strcut" | "@packed") ws+ valid-name ws* "{" (ws* member)* ws* "}"
 member := identifier ws* ":" ws* type
 
-indexed-struct-like := ("@enum" | "@dict") ws* "(" ws* unsigned ws* ")" ws* valid-name ws* "{" ws* (indexed-member | ws*)* "}"
+indexed-struct-like := ("@enum" | "@dict") ws* "(" ws* unsigned ws* ")" ws* valid-name ws* "{" (ws* indexed-member)* ws * "}"
 indexed-member := indentifier ws* (":" ws* type)? ws* ("=" ws* number)?
 
 type := sequence-like | varint-signed | varint-unsigned | valid-name | builtin
@@ -228,11 +228,11 @@ signed := "i" packed-dec
 packed-dec := "0" | [1-9] [0-9]*
 
 number := bin | hex | dec
-bin := "0b" [_]* [01] [01_]*
-hex := "0x" [_]* [0-9a-fA-F] [0-9a-fA-F_]*
+bin := "0" [bB] [_]* [01] [01_]*
+hex := "0" [xX] [_]* [0-9a-fA-F] [0-9a-fA-F_]*
 dec := [0-9] [0-9_]*
 
-valid-name := !(builtin ("{" | "@" | ws | END)) identifier
+valid-name := !(builtin ("{" | "@" | ")" | "}" | "=" | ws | END)) identifier
 builtin := "void" | signed | unsigned
 
 identifier := [a-zA-Z] [a-zA-Z0-9_]*

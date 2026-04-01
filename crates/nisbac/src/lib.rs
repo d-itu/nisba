@@ -1,33 +1,71 @@
+use std::fmt::{self, Debug, Display, Formatter};
+
 use thiserror::Error;
 
+pub(crate) type Ident = smol_str::SmolStr;
+
+pub mod back;
+pub mod parser;
+pub mod schema;
+
+pub use back::CodeGenKind;
+use parser::ParseError;
+use schema::{resolver, validator};
+
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum Kind {
     #[error(transparent)]
-    ParseError(#[from] pest::error::Error<ast::Rule>),
-    #[error("Multiple definitions for identifier '{0}'")]
-    MultipleDefinitions(Ident),
-    #[error("Duplicate member name '{0}'")]
-    DuplicateMemberName(Ident),
-    #[error("Discriminant assigned more than once")]
-    DiscriminantAssignedMoreThanOnce,
-    #[error("Discriminant has unsupported bit width {0}")]
-    InvalidDiscriminantBitWidth(u16),
-    #[error("Discriminant value out of range")]
-    DiscriminantValueOutOfRange,
-    #[error("Size not aligned to byte")]
-    NotByteAligned,
-    #[error("Size must be known at compilation time")]
-    UnknownSize,
-    #[error("Field containing unknown type")]
-    UnknownType(Vec<Ident>),
-    #[error("Unsupported varint bit width")]
-    UnsupportedVarintBitWidth,
-    #[error("Length integer exceeds maximum bit width of 64")]
-    LengthTypeIntegerTooBig,
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Resolve(#[from] resolver::Error),
+    #[error(transparent)]
+    Validate(#[from] validator::Error),
+}
+#[derive(Error)]
+pub struct Error<T> {
+    kind: Kind,
+    src: T,
 }
 
-pub type Ident = smol_str::SmolStr;
+impl<T: AsRef<str>> Debug for Error<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
 
-pub mod ast;
-pub mod back;
-pub mod schema;
+impl<T: AsRef<str>> Display for Error<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            Kind::Parse(ParseError { offset, expected }) => {
+                write!(f, "expected {expected} at {offset}")
+            }
+            Kind::Resolve(e) => match e {
+                resolver::Error::Spanned(e) => {
+                    write!(f, r#"{}: "{}""#, e.item, e.span.show(self.src.as_ref()))
+                }
+                resolver::Error::UnknownTypeName(_) => write!(f, "unknown typename"),
+            },
+            Kind::Validate(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+type CodeGenResult<T> = Result<String, Error<T>>;
+
+pub fn generate(src: &str, kind: CodeGenKind) -> CodeGenResult<&str> {
+    let doc = parser::parse(src).map_err(|e| Error {
+        kind: e.into(),
+        src,
+    })?;
+    let schema = schema::resolve(&doc).map_err(|e| Error {
+        kind: e.into(),
+        src,
+    })?;
+    let validated = schema::validate(schema).map_err(|e| Error {
+        kind: e.into(),
+        src,
+    })?;
+    let tokens = back::rust::generate(&validated, kind, Default::default());
+    let file = syn::parse2(tokens).unwrap();
+    Ok(prettyplease::unparse(&file))
+}

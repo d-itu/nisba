@@ -8,4 +8,6 @@ proc-macro = true
 
 [dependencies]
 nisbac = { path = "../nisbac" }
+proc-macro-error = "1.0.4"
+proc-macro2 = "1.0.106"
 syn = "2.0.117"
