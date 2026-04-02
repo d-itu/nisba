@@ -593,6 +593,7 @@ fn impl_encode(
 ) -> TokenStream {
     quote! {
         impl #lifetime #name #lifetime {
+            #[inline]
             pub #con fn prepare(&self) -> ::nisba::encode::Result<usize> {
                 Ok(#prepare)
             }
@@ -601,6 +602,7 @@ fn impl_encode(
             }
         }
         unsafe impl #lifetime ::nisba::encode::Encode for #name #lifetime {
+            #[inline]
             fn prepare(&self) -> ::nisba::encode::Result<usize> {
                 self.prepare()
             }
