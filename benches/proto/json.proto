@@ -1,0 +1,30 @@
+edition = "2023";
+
+package json;
+
+import "google/protobuf/empty.proto";
+
+message Array {
+  repeated Json items = 1;
+}
+
+message Entry {
+  bytes key = 1;
+  Json value = 2;
+}
+
+message Object {
+  repeated Entry entries = 1;
+}
+
+message Json {
+  oneof value {
+    google.protobuf.Empty false = 1;
+    google.protobuf.Empty true = 2;
+    double number = 3;
+    bytes string = 4;
+    Array array = 5;
+    Object object = 6;
+    google.protobuf.Empty null = 7;
+  }
+}

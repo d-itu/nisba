@@ -1,0 +1,44 @@
+@primitive(u32) f32
+
+@packed tcp_flags {
+  cwr: u1
+  ece: u1
+  urg: u1
+  ack: u1
+  psh: u1
+  rst: u1
+  syn: u1
+  fin: u1
+}
+
+@packed rgbf32 {
+  r: f32
+  g: f32
+  b: f32
+}
+
+@struct person {
+  name: @vector(u8 u8)
+  id: u64
+}
+
+@struct matrix {
+  elements: @stream(u8 @vector(u8 u32))
+}
+
+@enum(u8) color {
+  red
+  green = 1
+  none: void
+  rgb: u24
+  rgbf32: rgbf32 = 5
+  transparent = 0xff
+}
+
+@dict(u8) optional_fields {
+  sync
+  color: color
+  time: @varint(u64)
+  students: @stream(@varint(u32) person)
+  fin = 7
+}

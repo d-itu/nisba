@@ -1,0 +1,14 @@
+[package]
+name = "nisba-examples"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "json"
+path = "src/json.rs"
+
+[dependencies]
+nisba = { path = "../crates/nisba" }
+
+[build-dependencies]
+nisbac = { path = "../crates/nisbac" }
