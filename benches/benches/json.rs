@@ -34,14 +34,12 @@ pub mod nisba_decode {
                 Json::True => JsonValue::True,
                 &Json::Number(x) => JsonValue::Number(x),
                 Json::String(x) => JsonValue::String(x.data.as_bytes().into()),
-                Json::Array(x) => JsonValue::Array(x.items.map(|x| x.unwrap().de()).collect()),
+                Json::Array(x) => JsonValue::Array(x.items.iter().map(Self::de).collect()),
                 Json::Object(object) => JsonValue::Object(
                     object
                         .entries
-                        .map(|x| {
-                            let Entry { key, value } = x.unwrap();
-                            (key.data.as_bytes().into(), value.de())
-                        })
+                        .iter()
+                        .map(|Entry { key, value }| (key.data.as_bytes().into(), value.de()))
                         .collect(),
                 ),
                 Json::Null => JsonValue::Null,
@@ -54,13 +52,13 @@ pub mod nisba_decode {
                 Json::Number(_) => {}
                 Json::String(_) => {}
                 Json::Array(x) => {
-                    for item in x.items {
-                        item.unwrap().visit();
+                    for item in &x.items {
+                        item.visit();
                     }
                 }
                 Json::Object(x) => {
-                    for entry in x.entries {
-                        entry.unwrap().value.visit();
+                    for entry in &x.entries {
+                        entry.value.visit();
                     }
                 }
                 Json::Null => {}
@@ -87,10 +85,10 @@ pub mod nisba_decode {
     impl Display for Array<'_> {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             f.write_char('[')?;
-            let mut iter = self.items;
+            let mut iter = self.items.iter();
             while let Some(x) = iter.next() {
-                write!(f, "{}", x.unwrap())?;
-                if !iter.as_bytes().is_empty() {
+                write!(f, "{x}")?;
+                if iter.len() != 0 {
                     f.write_char(',')?;
                 }
             }
@@ -101,13 +99,12 @@ pub mod nisba_decode {
     impl Display for Object<'_> {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             f.write_char('{')?;
-            let mut iter = self.entries;
-            while let Some(x) = iter.next() {
-                let Entry { key, value } = x.unwrap();
+            let mut iter = self.entries.iter();
+            while let Some(Entry { key, value }) = iter.next() {
                 write!(f, "{:?}:{value}", unsafe {
                     str::from_utf8_unchecked(key.data.as_bytes())
                 })?;
-                if !iter.as_bytes().is_empty() {
+                if iter.len() != 0 {
                     f.write_char(',')?;
                 }
             }

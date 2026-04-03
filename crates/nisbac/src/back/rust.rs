@@ -2,7 +2,11 @@ use heck::ToUpperCamelCase;
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{ToTokens, quote};
 
-use crate::{Ident, back::CodeGenKind, schema::*};
+use crate::{
+    Ident,
+    back::CodeGenKind,
+    schema::{validator::BitWidth, *},
+};
 
 trait IdentExt {
     fn no_rename(&self) -> proc_macro2::Ident;
@@ -33,24 +37,65 @@ pub struct Config {}
 
 struct Context<'a> {
     schema: &'a Validated,
+    has_lifetime: Box<[bool]>,
     #[allow(dead_code)]
     config: Config,
     kind: CodeGenKind,
 }
 
+impl Vector {
+    fn zero_copy(&self, bit_width: &[BitWidth]) -> bool {
+        self.elem_ty.is_fixed_size(bit_width)
+    }
+}
+
+impl Context<'_> {
+    fn calc_lifetime(&mut self) {
+        if self.kind == CodeGenKind::Encode {
+            return;
+        }
+        self.schema
+            .schema
+            .definitions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, def)| match def {
+                Definition::Stream(_) => Some(idx),
+                Definition::Vector(v) if v.zero_copy(&self.schema.bit_width) => Some(idx),
+                _ => None,
+            })
+            .map(Handle)
+            .for_each(|x| self.mark_lifetime(x));
+    }
+    fn mark_lifetime(&mut self, root: Handle) {
+        for referrer in &self.schema.referrers[root.0] {
+            let update = !self.has_lifetime[referrer.0];
+            if update {
+                self.has_lifetime[referrer.0] = true;
+                self.schema.referrers[referrer.0]
+                    .iter()
+                    .copied()
+                    .for_each(|x| self.mark_lifetime(x));
+            }
+        }
+    }
+}
+
 pub fn generate(schema: &Validated, kind: CodeGenKind, config: Config) -> TokenStream {
     let mut ctx = Context {
         schema,
+        has_lifetime: vec![false; schema.schema.definitions.len()].into(),
         config,
         kind,
     };
+    ctx.calc_lifetime();
     let definitions = schema
         .schema
         .definitions
         .iter()
         .enumerate()
         .map(|(idx, definition)| {
-            let has_lifetime = schema.has_lifetime[idx] && kind == CodeGenKind::Decode;
+            let has_lifetime = ctx.has_lifetime[idx];
             match definition {
                 &Definition::Primitive(Primitive {
                     ref name,
@@ -75,21 +120,11 @@ pub fn generate(schema: &Validated, kind: CodeGenKind, config: Config) -> TokenS
     }
 }
 
-impl Type {
-    fn fixed_bitwidth(self, ctx: &Context) -> usize {
-        match self {
-            Self::Allocated(handle) => ctx.schema.bit_width[handle.0].fixed().unwrap(),
-            Self::Integer { bit_width, .. } => bit_width as _,
-            Self::Varint { .. } => unreachable!(),
-        }
-    }
-}
-
 impl Packed {
     fn is_bitfield(&self, ctx: &Context) -> bool {
         self.members
             .iter()
-            .any(|member| member.ty.fixed_bitwidth(ctx) % 8 != 0)
+            .any(|member| member.ty.fixed_bit_width(&ctx.schema.bit_width).unwrap() % 8 != 0)
     }
     fn generate(&self, ctx: &mut Context) -> TokenStream {
         match self.is_bitfield(ctx) {
@@ -101,7 +136,7 @@ impl Packed {
         let bit_size: usize = self
             .members
             .iter()
-            .map(|member| member.ty.fixed_bitwidth(ctx))
+            .map(|member| member.ty.fixed_bit_width(&ctx.schema.bit_width).unwrap())
             .sum();
         let byte_size = Literal::usize_unsuffixed(bit_size / 8);
         let name = self.name.camel_case();
@@ -236,7 +271,7 @@ impl Enum {
             let ty = match member.ty {
                 Type::Integer { bit_width, .. } if bit_width == 0 => quote!(),
                 _ => {
-                    let ty = member.ty.generate(ctx);
+                    let ty = member.ty.generate(ctx, false);
                     quote!((#ty))
                 }
             };
@@ -479,12 +514,12 @@ impl Dict {
 impl LenType {
     fn type_name(self) -> TokenStream {
         match self {
-            LenType::V16 => quote!(::nisba::decode::Varint::<u16>),
-            LenType::V32 => quote!(::nisba::decode::Varint::<u32>),
-            LenType::V64 => quote!(::nisba::decode::Varint::<u64>),
+            LenType::V16 => quote!(::nisba::wrappers::Varint::<u16>),
+            LenType::V32 => quote!(::nisba::wrappers::Varint::<u32>),
+            LenType::V64 => quote!(::nisba::wrappers::Varint::<u64>),
             _ => {
                 let n = Literal::usize_unsuffixed(self as _);
-                quote!(::nisba::decode::Integer::<#n>)
+                quote!(::nisba::wrappers::Integer::<#n>)
             }
         }
     }
@@ -506,7 +541,7 @@ impl LenType {
             },
             _ => {
                 let ty = Integer {
-                    bit_width: self as u16 * 8,
+                    bit_width: self.fixed_size() * 8,
                     signedness: Signedness::Unsigned,
                 }
                 .type_name();
@@ -516,40 +551,32 @@ impl LenType {
             }
         }
     }
+    fn decode(self) -> TokenStream {
+        match self {
+            LenType::V16 | LenType::V32 | LenType::V64 => {
+                let bit_width = Literal::usize_unsuffixed(self.varint_size() as usize * 8);
+                quote! {
+                    unsafe { ::nisba::const_try!(r.next_varint_unsigned(#bit_width)) }
+                }
+            }
+            _ => {
+                let bit_width = Literal::usize_unsuffixed(self.fixed_size() as usize * 8);
+                quote! {
+                    unsafe { ::nisba::const_try!(r.next_unsigned(#bit_width)) }
+                }
+            }
+        }
+    }
     fn bit_width(self) -> u16 {
         match self {
             LenType::V16 => 16,
             LenType::V32 => 32,
             LenType::V64 => 64,
-            _ => self as u16 * 8,
+            _ => self.fixed_size() * 8,
         }
     }
     fn max_size(self) -> Literal {
         Literal::usize_unsuffixed((1usize << self.bit_width() - 1).wrapping_sub(1))
-    }
-}
-
-fn fixed_sized_ty(ty: Type, ctx: &Context) -> TokenStream {
-    match ty {
-        Type::Integer {
-            signedness,
-            bit_width,
-        } => Integer {
-            signedness,
-            bit_width,
-        }
-        .type_name(),
-        Type::Varint { .. } => unreachable!(),
-        Type::Allocated(handle) => match &ctx.schema.schema.definitions[handle.0] {
-            Definition::Primitive(Primitive { name, .. })
-            | Definition::Packed(Packed { name, .. })
-            | Definition::Enum(Enum { name, .. })
-            | Definition::Dict(Dict { name, .. }) => {
-                let ty = name.camel_case();
-                quote!(#ty)
-            }
-            Definition::Stream(_) | Definition::Vector(_) | Definition::Struct(_) => unreachable!(),
-        },
     }
 }
 
@@ -620,27 +647,17 @@ fn impl_decode(
 ) -> TokenStream {
     if let Some(lifetime) = lifetime {
         quote! {
-            impl #lifetime #name #lifetime {
-                pub const fn decode(r: &mut ::nisba::decode::Decoder #lifetime) -> ::nisba::decode::Result<Self> {
-                    Ok(#decode)
-                }
-            }
             unsafe impl #lifetime ::nisba::decode::Decode #lifetime for #name #lifetime {
                 fn decode(r: &mut ::nisba::decode::Decoder #lifetime) -> ::nisba::decode::Result<Self> {
-                    Self::decode(r)
+                    Ok(#decode)
                 }
             }
         }
     } else {
         quote! {
-            impl #name {
-                pub const fn decode(r: &mut ::nisba::decode::Decoder) -> ::nisba::decode::Result<Self> {
-                    Ok(#decode)
-                }
-            }
             unsafe impl ::nisba::decode::Decode<'_> for #name {
                 fn decode(r: &mut ::nisba::decode::Decoder) -> ::nisba::decode::Result<Self> {
-                    Self::decode(r)
+                    Ok(#decode)
                 }
             }
         }
@@ -649,7 +666,7 @@ fn impl_decode(
 
 fn generate_field_option(name: &Ident, ty: &Type, ctx: &Context, option: bool) -> TokenStream {
     let name = name.no_rename();
-    let ty = ty.generate(ctx);
+    let ty = ty.generate(ctx, false);
     if option {
         quote! {
             pub #name: Option<#ty>,
@@ -685,6 +702,19 @@ impl Integer {
             _ => {
                 let size = self.bit_width as usize / 8;
                 quote!([u8; #size])
+            }
+        }
+    }
+    fn wrapper(self) -> TokenStream {
+        match self.bit_width {
+            0 => quote!(::nisba::wrappers::Primitive<()>),
+            8 | 16 | 32 | 64 | 128 => {
+                let ty = self.rust_integer().to_token_stream();
+                quote!(::nisba::wrappers::Primitive<#ty>)
+            }
+            _ => {
+                let size = self.bit_width as usize / 8;
+                quote!(::nisba::wrappers::Integer<#size>)
             }
         }
     }
@@ -743,6 +773,7 @@ fn decode_varint(size: VarintSize, signedness: Signedness) -> TokenStream {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Sequence {
     Vector,
     Stream,
@@ -750,21 +781,50 @@ enum Sequence {
 
 impl Sequence {
     fn name_encode(elem_ty: Type, ctx: &Context) -> TokenStream {
-        let ty = elem_ty.generate(ctx);
+        let ty = elem_ty.generate(ctx, false);
         quote!(Vec<#ty>)
     }
     fn name_decode(self, elem_ty: Type, len_ty: LenType, ctx: &Context) -> TokenStream {
         let len = len_ty.type_name();
-        let ty = elem_ty.generate(ctx);
         match self {
-            Sequence::Vector => quote!(::nisba::decode::Vector::<'a, #ty, #len>),
-            Sequence::Stream => quote!(::nisba::decode::Stream::<'a, #ty, #len>),
+            Sequence::Vector => {
+                if elem_ty.is_fixed_size(&ctx.schema.bit_width) {
+                    let ty = elem_ty.generate(ctx, true);
+                    quote!(::nisba::decode::Vector::<'a, #ty, #len>)
+                } else {
+                    let ty = elem_ty.generate(ctx, false);
+                    quote!(Box::<[#ty]>)
+                }
+            }
+            Sequence::Stream => {
+                let ty = elem_ty.generate(ctx, true);
+                quote!(::nisba::decode::Stream::<'a, #ty, #len>)
+            }
         }
     }
     fn decode(self, elem_ty: Type, len_ty: LenType, ctx: &Context) -> TokenStream {
         let ty = self.name_decode(elem_ty, len_ty, ctx);
-        quote! {
-            unsafe { ::nisba::const_try!(#ty::decode(r)) }
+        let lazy = match self {
+            Sequence::Vector => elem_ty.is_fixed_size(&ctx.schema.bit_width),
+            Sequence::Stream => true,
+        };
+        if lazy {
+            quote! {
+                ::nisba::const_try!(<#ty as ::nisba::decode::Decode>::decode(r))
+            }
+        } else {
+            let len = len_ty.decode();
+            let elem = elem_ty.decode(ctx);
+            quote! {{
+                let len = #len as usize;
+                let mut items = Box::new_uninit_slice(len);
+                for idx in 0..len {
+                    unsafe {
+                        items.get_unchecked_mut(idx).write(#elem);
+                    }
+                }
+                unsafe { items.assume_init() }
+            }}
         }
     }
     fn type_name(self, elem_ty: Type, len_ty: LenType, ctx: &Context) -> TokenStream {
@@ -776,20 +836,46 @@ impl Sequence {
 }
 
 impl Type {
-    fn generate(self, ctx: &Context) -> TokenStream {
+    fn fixed_bit_width(self, bit_width: &[BitWidth]) -> Option<usize> {
+        match self {
+            Type::Allocated(handle) => match bit_width[handle.0] {
+                BitWidth::Fixed(x) => Some(x),
+                BitWidth::Variable => None,
+            },
+            Type::Integer { bit_width, .. } => Some(bit_width as _),
+            Type::Varint { .. } => None,
+        }
+    }
+    fn is_fixed_size(self, bit_width: &[BitWidth]) -> bool {
+        self.fixed_bit_width(bit_width).is_some()
+    }
+    fn fixed_size(self, bit_width: &[BitWidth]) -> Option<usize> {
+        self.fixed_bit_width(bit_width).map(|x| x / 8)
+    }
+    fn generate(self, ctx: &Context, wrapper: bool) -> TokenStream {
         match self {
             Type::Integer {
                 signedness,
                 bit_width,
-            } => Integer {
-                signedness,
-                bit_width,
+            } => {
+                let int = Integer {
+                    signedness,
+                    bit_width,
+                };
+                match wrapper {
+                    false => int.type_name(),
+                    true => int.wrapper(),
+                }
             }
-            .type_name(),
-            Type::Varint { signedness, size } => varint_type_name(size, signedness),
+            Type::Varint { signedness, size } => {
+                let ty = varint_type_name(size, signedness);
+                match wrapper {
+                    false => ty,
+                    true => quote!(::nisba::wrappers::Varint<#ty>),
+                }
+            }
             Type::Allocated(handle) => {
-                let has_lifetime =
-                    ctx.schema.has_lifetime[handle.0] && ctx.kind == CodeGenKind::Decode;
+                let has_lifetime = ctx.has_lifetime[handle.0] && ctx.kind == CodeGenKind::Decode;
                 match &ctx.schema.schema.definitions[handle.0] {
                     Definition::Primitive(Primitive { name, .. }) => {
                         let ty = name.no_rename();
@@ -847,9 +933,19 @@ impl Type {
                 &Definition::Vector(Vector { len_ty, elem_ty }) => {
                     let max_size = len_ty.max_size();
                     let len = len_ty.prepare(quote! { #expr.len() });
-                    let elem_ty = fixed_sized_ty(elem_ty, ctx);
-                    let elems = quote! {
-                        ::core::mem::size_of::<#elem_ty>() * #expr.len()
+                    let elems = match elem_ty.fixed_size(&ctx.schema.bit_width) {
+                        Some(x) => quote! { #x * #expr.len() },
+                        None => {
+                            let prepare = elem_ty.prepare(quote!(x), ctx, false);
+                            quote!({
+                                let mut byte_count = 0;
+                                let mut iter = #expr.iter();
+                                while let Some(x) = iter.next() {
+                                    byte_count += #prepare;
+                                }
+                                byte_count
+                            })
+                        }
                     };
                     if validate {
                         let validate = quote! {
@@ -869,19 +965,21 @@ impl Type {
                     let max_size = len_ty.max_size();
                     let len = len_ty.prepare(quote!(byte_count));
                     let prepare = elem_ty.prepare(quote!(x), ctx, false);
+                    let validate = validate.then_some(quote! {
+                        if byte_count > #max_size {
+                            return Err(::nisba::encode::Error::ContainerLengthOverflow);
+                        }
+                    });
                     quote!({
                         let mut byte_count = 0;
                         let mut iter = #expr.iter();
                         while let Some(x) = iter.next() {
                             byte_count += #prepare;
-                            if byte_count > #max_size {
-                                return Err(::nisba::encode::Error::ContainerLengthOverflow);
-                            }
                         }
+                        #validate
                         #len + byte_count
                     })
                 }
-
                 Definition::Packed(_)
                 | Definition::Struct(_)
                 | Definition::Enum(_)
@@ -986,7 +1084,7 @@ impl Type {
                 | Definition::Dict(Dict { name, .. }) => {
                     let ty = name.camel_case();
                     quote! {
-                        ::nisba::const_try!(#ty::decode(r))
+                        ::nisba::const_try!(<#ty as ::nisba::decode::Decode>::decode(r))
                     }
                 }
             },

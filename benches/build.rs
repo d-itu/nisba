@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
-    let src = fs::read_to_string("../examples/src/json.nisba").unwrap();
+    let src = fs::read_to_string("json.nisba").unwrap();
     let out: PathBuf = env::var("OUT_DIR").unwrap().into();
 
     let contents = nisbac::generate(&src, nisbac::CodeGenKind::Encode).unwrap();
@@ -20,6 +20,13 @@ fn main() {
         .unwrap();
 
     let dir: PathBuf = env::var("CARGO_MANIFEST_DIR").unwrap().into();
-    let data = reqwest::blocking::get("https://raw.githubusercontent.com/miloyip/nativejson-benchmark/refs/tags/v1.0.0/data/citm_catalog.json").unwrap().bytes().unwrap();
-    fs::write(dir.join("benches/data/citm_catalog.json"), data).unwrap();
+    let citm_catalog = dir.join("benches/data/citm_catalog.json");
+    if !citm_catalog.exists() {
+        let url = "https://raw.githubusercontent.com/miloyip/nativejson-benchmark/refs/tags/v1.0.0/data/citm_catalog.json";
+        fs::write(
+            citm_catalog,
+            reqwest::blocking::get(url).unwrap().bytes().unwrap(),
+        )
+        .unwrap();
+    }
 }

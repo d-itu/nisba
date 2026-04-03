@@ -45,21 +45,11 @@ enum Status {
     Validated(BitWidth),
 }
 
-#[derive(Clone, Copy)]
-enum Constraint {
-    None,
-    FixedSize {
-        #[allow(dead_code)]
-        by: Handle,
-    },
-}
-
 pub(super) struct Validator {
     states: Box<[State]>,
     pub bit_width: Box<[MaybeUninit<BitWidth>]>,
-    pub has_lifetime: Box<[bool]>,
-    constraints: Box<[Constraint]>,
-    rec_streams: Box<[bool]>,
+    pub referrers: Box<[Vec<Handle>]>,
+    rec_sequences: Box<[bool]>,
 }
 
 impl Validator {
@@ -67,9 +57,8 @@ impl Validator {
         Self {
             states: vec![State::Unvisited; len].into(),
             bit_width: Box::new_uninit_slice(len),
-            has_lifetime: vec![false; len].into(),
-            constraints: vec![Constraint::None; len].into(),
-            rec_streams: vec![false; len].into(),
+            referrers: vec![vec![]; len].into(),
+            rec_sequences: vec![false; len].into(),
         }
     }
     fn validated(&mut self, handle: Handle, bit_width: BitWidth) {
@@ -113,54 +102,34 @@ impl Definition {
         validator.states[handle.0] = State::Visited;
         let res = match self {
             &Definition::Primitive(Primitive { bit_width, .. }) => BitWidth::Fixed(bit_width as _),
-            &Definition::Vector(Vector { elem_ty, .. }) => {
-                validator.has_lifetime[handle.0] = true;
-                match elem_ty {
-                    Type::Allocated(Handle(idx)) => {
-                        if schema.get_definition(Handle(idx))?.is_sequence() {
-                            Err(Error::RequiresByteAligned)?
-                        } else {
-                            validator.constraints[idx] = Constraint::FixedSize { by: handle }
-                        }
-                    }
-                    Type::Integer { bit_width, .. } => {
-                        if bit_width % 8 != 0 {
-                            Err(Error::RequiresByteAligned)?
-                        }
-                    }
-                    Type::Varint { .. } => Err(Error::RequiresFixedSize)?,
-                }
-                BitWidth::Variable
-            }
-            &Definition::Stream(Stream { elem_ty, .. }) => {
-                validator.has_lifetime[handle.0] = true;
-                if validator.rec_streams[handle.0] {
+            &Definition::Vector(Vector { elem_ty, .. })
+            | &Definition::Stream(Stream { elem_ty, .. }) => {
+                if validator.rec_sequences[handle.0] {
                     Err(Error::RecursiveStream)?;
                 }
-                let inner = match elem_ty {
-                    Type::Allocated(handle) => match schema.get_definition(handle)? {
-                        def @ Definition::Vector(_) => {
-                            def.validate(handle, validator, schema)?;
-                            None
+                validator.rec_sequences[handle.0] = true;
+                let referrer = handle;
+                if let Some((handle, inner)) = match elem_ty {
+                    Type::Allocated(handle) => {
+                        validator.referrers[handle.0].push(referrer);
+                        let inner = schema.get_definition(handle)?;
+                        match inner {
+                            Definition::Vector(_) | Definition::Stream(_) => Some((handle, inner)),
+                            _ => None,
                         }
-                        def @ Definition::Stream(_) => {
-                            def.validate(handle, validator, schema)?;
-                            Some(handle.0)
-                        }
-                        _ => None,
-                    },
+                    }
                     _ => None,
-                };
-                match inner {
-                    Some(x) => validator.rec_streams[x] = true,
-                    None => validator.rec_streams.iter_mut().for_each(|x| *x = false),
+                } {
+                    inner.validate(handle, validator, schema)?;
+                } else {
+                    validator.rec_sequences.iter_mut().for_each(|x| *x = false);
                 }
                 BitWidth::Variable
             }
             Definition::Packed(Packed { members, .. }) => {
                 let mut res = 0;
                 for Member { ty, .. } in members {
-                    match ty.bit_width(validator, schema)? {
+                    match ty.validate(validator, schema, handle)? {
                         BitWidth::Fixed(x) => res += x,
                         BitWidth::Variable => Err(Error::RequiresFixedSize)?,
                     }
@@ -172,13 +141,10 @@ impl Definition {
             }
             Definition::Struct(Struct { members, .. }) => {
                 for &Member { ty, .. } in members {
-                    if let BitWidth::Fixed(x) = ty.bit_width(validator, schema)? {
+                    if let BitWidth::Fixed(x) = ty.validate(validator, schema, handle)? {
                         if x % 8 != 0 {
                             Err(Error::RequiresByteAligned)?
                         }
-                    }
-                    if let Type::Allocated(x) = ty {
-                        validator.has_lifetime[handle.0] |= validator.has_lifetime[x.0]
                     }
                 }
                 BitWidth::Variable
@@ -200,7 +166,8 @@ impl Definition {
                     }
                     used_indices.insert(first.index);
 
-                    let mut member_bit_width = first.member.ty.bit_width(validator, schema)?;
+                    let mut member_bit_width =
+                        first.member.ty.validate(validator, schema, handle)?;
                     for &IndexedMember {
                         index,
                         member: Member { ty, .. },
@@ -212,14 +179,11 @@ impl Definition {
                         if !used_indices.insert(index) {
                             Err(Error::DuplicateIndex)?
                         }
-                        let bit_width = ty.bit_width(validator, schema)?;
+                        let bit_width = ty.validate(validator, schema, handle)?;
                         if let BitWidth::Fixed(x) = bit_width
                             && x % 8 != 0
                         {
                             Err(Error::RequiresByteAligned)?
-                        }
-                        if let Type::Allocated(x) = ty {
-                            validator.has_lifetime[handle.0] |= validator.has_lifetime[x.0]
                         }
                         if bit_width != member_bit_width {
                             member_bit_width = BitWidth::Variable
@@ -250,14 +214,11 @@ impl Definition {
                     if !used_indices.insert(index) {
                         Err(Error::DuplicateIndex)?
                     }
-                    let bit_width = ty.bit_width(validator, schema)?;
+                    let bit_width = ty.validate(validator, schema, handle)?;
                     if let BitWidth::Fixed(x) = bit_width
                         && x % 8 != 0
                     {
                         Err(Error::RequiresByteAligned)?
-                    }
-                    if let Type::Allocated(x) = ty {
-                        validator.has_lifetime[handle.0] |= validator.has_lifetime[x.0]
                     }
                     if bit_width != BitWidth::Fixed(0) {
                         res = BitWidth::Variable
@@ -266,25 +227,30 @@ impl Definition {
                 res
             }
         };
-        match validator.constraints[handle.0] {
-            Constraint::None => {}
-            Constraint::FixedSize { .. } => res.validate_fixed()?,
-        }
         validator.validated(handle, res);
         Ok(res)
     }
 }
 
 impl Type {
-    fn bit_width(&self, validator: &mut Validator, schema: &Schema) -> Result<BitWidth> {
+    fn validate(
+        &self,
+        validator: &mut Validator,
+        schema: &Schema,
+        referrer: Handle,
+    ) -> Result<BitWidth> {
         Ok(match self {
-            &Type::Allocated(handle) => match validator.status(handle) {
-                Status::Unvisited => schema
-                    .get_definition(handle)?
-                    .validate(handle, validator, schema)?,
-                Status::Visited => Err(Error::RecursiveDefinition)?,
-                Status::Validated(x) => x,
-            },
+            &Type::Allocated(handle) => {
+                let res = match validator.status(handle) {
+                    Status::Unvisited => schema
+                        .get_definition(handle)?
+                        .validate(handle, validator, schema)?,
+                    Status::Visited => Err(Error::RecursiveDefinition)?,
+                    Status::Validated(x) => x,
+                };
+                validator.referrers[handle.0].push(referrer);
+                res
+            }
             &Type::Integer { bit_width, .. } => BitWidth::Fixed(bit_width as _),
             Type::Varint { .. } => BitWidth::Variable,
         })
@@ -308,12 +274,6 @@ impl BitWidth {
         match self {
             BitWidth::Fixed(x) => Some(x),
             BitWidth::Variable => None,
-        }
-    }
-    fn validate_fixed(self) -> Result<()> {
-        match self {
-            BitWidth::Fixed(_) => Ok(()),
-            BitWidth::Variable => Err(Error::RequiresFixedSize),
         }
     }
 }

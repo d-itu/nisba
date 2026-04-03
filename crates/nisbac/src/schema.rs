@@ -41,6 +41,15 @@ pub enum LenType {
     V64 = 8 + 8,
 }
 
+impl LenType {
+    pub fn fixed_size(self) -> u16 {
+        self as _
+    }
+    pub fn varint_size(self) -> u16 {
+        self.fixed_size() - 8
+    }
+}
+
 pub enum Sequence {
     Vector(Vector),
     Stream(Stream),
@@ -154,7 +163,7 @@ pub fn resolve(doc: &ast::Document) -> Result<Schema, resolver::Error> {
 pub struct Validated {
     pub schema: Schema,
     pub bit_width: Box<[validator::BitWidth]>,
-    pub has_lifetime: Box<[bool]>,
+    pub referrers: Box<[Vec<Handle>]>,
 }
 
 pub fn validate(schema: Schema) -> Result<Validated, validator::Error> {
@@ -163,7 +172,7 @@ pub fn validate(schema: Schema) -> Result<Validated, validator::Error> {
     Ok(Validated {
         schema,
         bit_width: unsafe { validator.bit_width.assume_init() },
-        has_lifetime: validator.has_lifetime,
+        referrers: validator.referrers,
     })
 }
 

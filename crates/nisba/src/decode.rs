@@ -1,6 +1,13 @@
-use core::{fmt::Debug, marker::PhantomData, mem, result, slice};
+use core::{
+    fmt::Debug,
+    marker::PhantomData,
+    mem::{self, MaybeUninit},
+    result, slice,
+};
 
 use thiserror::Error;
+
+use crate::{private::Sealed, wrappers::*};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -64,7 +71,7 @@ impl<'a> Decoder<'a> {
         }
         Ok(u64::from_le(result))
     }
-    pub const fn next_varint_unsigned(&mut self, bit_width: usize) -> Result<u64> {
+    pub const unsafe fn next_varint_unsigned(&mut self, bit_width: usize) -> Result<u64> {
         let mut value = 0;
         let mut shift = 0;
         loop {
@@ -80,8 +87,8 @@ impl<'a> Decoder<'a> {
         }
         Ok(value)
     }
-    pub const fn next_varint_signed(&mut self, bit_width: usize) -> Result<i64> {
-        let n = const_try!(self.next_varint_unsigned(bit_width));
+    pub const unsafe fn next_varint_signed(&mut self, bit_width: usize) -> Result<i64> {
+        let n = unsafe { const_try!(self.next_varint_unsigned(bit_width)) };
         Ok((n >> 1).cast_signed() ^ -((n & 1).cast_signed()))
     }
     pub fn next<T: Decode<'a>>(&mut self) -> Result<T> {
@@ -93,44 +100,110 @@ pub unsafe trait Decode<'a>: Sized {
     fn decode(r: &mut Decoder<'a>) -> Result<Self>;
 }
 
-trait Length: for<'a> Decode<'a> {
+pub trait Element: Sealed {
+    type Output: Sized;
+}
+
+pub trait Length: for<'a> Decode<'a> + Sealed {
     fn value(self) -> u64;
 }
 
-pub struct Integer<const N: usize>(u64);
+impl<T> Primitive<T> {
+    pub const fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+        let mut result = MaybeUninit::uninit();
+        let src = const_try!(r.next_bytes(mem::size_of::<T>()));
+        unsafe { (&raw mut result as *mut u8).copy_from_nonoverlapping(src.as_ptr(), src.len()) };
+        unsafe { result.assume_init() }
+    }
+}
+
+unsafe impl<T> Decode<'_> for Primitive<T> {
+    fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+        Self::decode(r)
+    }
+}
+
+macro_rules! length_primitive {
+    ($($t:ty),* $(,)?) => {
+        $(impl Length for Primitive<$t> {
+            fn value(self) -> u64 {
+                self.0 as _
+            }
+        })*
+    };
+}
+length_primitive!(u8, u16, u32, u64);
+
+impl<T> Element for Primitive<T> {
+    type Output = T;
+}
 
 unsafe impl<const N: usize> Decode<'_> for Integer<N> {
     fn decode(r: &mut Decoder) -> Result<Self> {
-        unsafe { r.next_unsigned(N).map(Self) }
+        r.next_u8_array::<N>().map(Self)
     }
+}
+
+impl<const N: usize> Element for Integer<N> {
+    type Output = [u8; N];
 }
 
 impl<const N: usize> Length for Integer<N> {
     fn value(self) -> u64 {
-        self.0
+        let mut result = 0;
+        unsafe {
+            (&raw mut result)
+                .cast::<u8>()
+                .copy_from_nonoverlapping(self.0.as_ptr(), self.0.len());
+        }
+        u64::from_le(result)
     }
 }
 
-pub struct Varint<T> {
-    value: u64,
-    marker: PhantomData<T>,
+macro_rules! varint_unsigned {
+    ($($t:ty),* $(,)?) => {
+        $(impl Varint<$t> {
+            pub const fn decode(r: &mut Decoder) -> Result<Self> {
+                let value = unsafe { const_try!(r.next_varint_unsigned(mem::size_of::<$t>() * 8)) };
+                Ok(Self(value as _))
+            }
+        }
+        unsafe impl Decode<'_> for Varint<$t> {
+            fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+                Self::decode(r)
+            }
+        }
+        impl Length for Varint<$t> {
+            fn value(self) -> u64 {
+                self.0 as _
+            }
+        }
+        impl Element for Varint<$t> {
+            type Output = $t;
+        })*
+    };
 }
+varint_unsigned!(u16, u32, u64);
 
-unsafe impl<T> Decode<'_> for Varint<T> {
-    fn decode(r: &mut Decoder<'_>) -> Result<Self> {
-        let value = r.next_varint_unsigned(mem::size_of::<T>() * 8)?;
-        Ok(Self {
-            value,
-            marker: PhantomData,
-        })
-    }
+macro_rules! varint_signed {
+    ($($t:ty),* $(,)?) => {
+        $(impl Varint<$t> {
+            pub const fn decode(r: &mut Decoder) -> Result<Self> {
+                let value = unsafe { const_try!(r.next_varint_signed(mem::size_of::<$t>() * 8)) };
+                Ok(Self(value as _))
+            }
+        }
+        unsafe impl Decode<'_> for Varint<$t> {
+            fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+                Self::decode(r)
+            }
+        }
+        impl Element for Varint<$t> {
+            type Output = $t;
+        })*
+    };
 }
-
-impl<T> Length for Varint<T> {
-    fn value(self) -> u64 {
-        self.value
-    }
-}
+varint_signed!(i16, i32, i64);
 
 pub struct Vector<'a, T, L> {
     ptr: *const u8,
@@ -171,7 +244,10 @@ impl<'a, T, L> Vector<'a, T, L> {
         let ptr: *const T = unsafe { self.ptr.add(byte_index) }.cast();
         unsafe { ptr.read_unaligned() }
     }
-    pub const fn next(&mut self) -> Option<T> {
+    pub fn next(&mut self) -> Option<T::Output>
+    where
+        T: Element,
+    {
         if self.len == 0 {
             return None;
         }
@@ -179,12 +255,12 @@ impl<'a, T, L> Vector<'a, T, L> {
         let result = unsafe { ptr.read_unaligned() };
         self.ptr = unsafe { self.ptr.add(mem::size_of::<T>()) };
         self.len -= 1;
-        Some(result)
+        Some(unsafe { (&raw const result).cast::<T::Output>().read() })
     }
 }
 
-impl<'a, T, L> Iterator for Vector<'a, T, L> {
-    type Item = T;
+impl<'a, T: Element, L> Iterator for Vector<'a, T, L> {
+    type Item = T::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next()
@@ -196,38 +272,22 @@ impl<'a, T, L> Iterator for Vector<'a, T, L> {
     }
 }
 
-impl<'a, T, L> ExactSizeIterator for Vector<'a, T, L> {
+impl<'a, T: Element, L> ExactSizeIterator for Vector<'a, T, L> {
     fn len(&self) -> usize {
         self.len()
     }
 }
 
-impl<'a, T, const N: usize> Vector<'a, T, Integer<N>> {
-    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len = unsafe { const_try!(r.next_unsigned(N)) };
-        let data = const_try!(r.next_bytes(len as usize));
-        Ok(Self::new(data))
-    }
-}
-
-impl<'a, T, I> Vector<'a, T, Varint<I>> {
-    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len = const_try!(r.next_varint_unsigned(mem::size_of::<T>()));
-        let data = const_try!(r.next_bytes(len as usize));
-        Ok(Self::new(data))
-    }
-}
-
 unsafe impl<'a, T, L: Length> Decode<'a> for Vector<'a, T, L> {
     fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let count: L = r.next()?;
-        let len = count.value() as usize * mem::size_of::<T>();
-        let data = r.next_bytes(len)?;
+        let len: L = r.next()?;
+        let size = len.value() as usize * mem::size_of::<T>();
+        let data = r.next_bytes(size)?;
         Ok(Self::new(data))
     }
 }
 
-impl<T: Debug, L> Debug for Vector<'_, T, L> {
+impl<T: Element<Output: Debug>, L> Debug for Vector<'_, T, L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(*self).finish()
     }
@@ -258,22 +318,6 @@ impl<'a, T, L> Stream<'a, T, L> {
     }
     pub const fn as_bytes(&self) -> &'a [u8] {
         self.decoder.remaining()
-    }
-}
-
-impl<'a, T, const N: usize> Stream<'a, T, Integer<N>> {
-    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len = unsafe { const_try!(r.next_unsigned(N)) };
-        let bytes = const_try!(r.next_bytes(len as _));
-        Ok(Self::new(Decoder::new(bytes)))
-    }
-}
-
-impl<'a, T, I> Stream<'a, T, Varint<I>> {
-    pub const unsafe fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len = const_try!(r.next_varint_unsigned(mem::size_of::<T>()));
-        let bytes = const_try!(r.next_bytes(len as _));
-        Ok(Self::new(Decoder::new(bytes)))
     }
 }
 

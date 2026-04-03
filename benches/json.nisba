@@ -1,0 +1,29 @@
+@primitive(u64) f64
+
+@struct string {
+  data: @vector(@varint(u32) u8)
+}
+
+@struct array {
+  items: @vector(@varint(u32) json)
+}
+
+@struct entry {
+  key: string
+  value: json
+}
+
+@struct object {
+  entries: @vector(@varint(u32) entry)
+}
+
+@enum(u8) json {
+  false
+  true
+  number: f64
+  string: string
+  array: array
+  object: object
+
+  null = 0xff
+}

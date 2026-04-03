@@ -110,7 +110,8 @@ Where:
 - Length type must be:
   - non-zero byte-aligned unsigned `integer`s with a maximum bit width of 64
   - valid unsigned `varint`s
-- Elements must be fixed-sized.
+- Elements can be fixed-sized or not fixed-sized.
+  Implementation **should** support zero-copy deserializing if vector has a fixed-sized element type
 
 Vectors support random access.
 
