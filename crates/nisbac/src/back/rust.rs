@@ -790,7 +790,7 @@ impl Sequence {
             Sequence::Vector => {
                 if elem_ty.is_fixed_size(&ctx.schema.bit_width) {
                     let ty = elem_ty.generate(ctx, true);
-                    quote!(::nisba::decode::Vector::<'a, #ty, #len>)
+                    quote!(::nisba::decode::Slice::<'a, #ty, #len>)
                 } else {
                     let ty = elem_ty.generate(ctx, false);
                     quote!(Box::<[#ty]>)

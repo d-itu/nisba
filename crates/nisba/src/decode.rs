@@ -205,21 +205,21 @@ macro_rules! varint_signed {
 }
 varint_signed!(i16, i32, i64);
 
-pub struct Vector<'a, T, L> {
+pub struct Slice<'a, T, L> {
     ptr: *const u8,
     len: usize,
     marker: PhantomData<(&'a [T], L)>,
 }
 
-impl<T, L> Clone for Vector<'_, T, L> {
+impl<T, L> Clone for Slice<'_, T, L> {
     fn clone(&self) -> Self {
         Self::new(self.as_bytes())
     }
 }
 
-impl<T, L> Copy for Vector<'_, T, L> {}
+impl<T, L> Copy for Slice<'_, T, L> {}
 
-impl<'a, T, L> Vector<'a, T, L> {
+impl<'a, T, L> Slice<'a, T, L> {
     pub const fn new(data: &'a [u8]) -> Self {
         Self {
             ptr: data.as_ptr(),
@@ -259,7 +259,7 @@ impl<'a, T, L> Vector<'a, T, L> {
     }
 }
 
-impl<'a, T: Element, L> Iterator for Vector<'a, T, L> {
+impl<'a, T: Element, L> Iterator for Slice<'a, T, L> {
     type Item = T::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -272,13 +272,13 @@ impl<'a, T: Element, L> Iterator for Vector<'a, T, L> {
     }
 }
 
-impl<'a, T: Element, L> ExactSizeIterator for Vector<'a, T, L> {
+impl<'a, T: Element, L> ExactSizeIterator for Slice<'a, T, L> {
     fn len(&self) -> usize {
         self.len()
     }
 }
 
-unsafe impl<'a, T, L: Length> Decode<'a> for Vector<'a, T, L> {
+unsafe impl<'a, T, L: Length> Decode<'a> for Slice<'a, T, L> {
     fn decode(r: &mut Decoder<'a>) -> Result<Self> {
         let len: L = r.next()?;
         let size = len.value() as usize * mem::size_of::<T>();
@@ -287,7 +287,7 @@ unsafe impl<'a, T, L: Length> Decode<'a> for Vector<'a, T, L> {
     }
 }
 
-impl<T: Element<Output: Debug>, L> Debug for Vector<'_, T, L> {
+impl<T: Element<Output: Debug>, L> Debug for Slice<'_, T, L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(*self).finish()
     }
