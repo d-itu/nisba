@@ -23,8 +23,8 @@ pub enum Kind {
 }
 #[derive(Error)]
 pub struct Error<T> {
-    kind: Kind,
-    src: T,
+    pub kind: Kind,
+    pub src: T,
 }
 
 impl<T: AsRef<str>> Debug for Error<T> {
