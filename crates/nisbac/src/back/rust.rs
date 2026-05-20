@@ -68,15 +68,12 @@ impl Context<'_> {
             .for_each(|x| self.mark_lifetime(x));
     }
     fn mark_lifetime(&mut self, root: Handle) {
-        for referrer in &self.schema.referrers[root.0] {
-            let update = !self.has_lifetime[referrer.0];
-            if update {
-                self.has_lifetime[referrer.0] = true;
-                self.schema.referrers[referrer.0]
-                    .iter()
-                    .copied()
-                    .for_each(|x| self.mark_lifetime(x));
-            }
+        if !self.has_lifetime[root.0] {
+            self.has_lifetime[root.0] = true;
+            self.schema.referrers[root.0]
+                .iter()
+                .copied()
+                .for_each(|x| self.mark_lifetime(x));
         }
     }
 }
@@ -765,10 +762,10 @@ fn decode_varint(size: VarintSize, signedness: Signedness) -> TokenStream {
     let bit_width = Literal::usize_unsuffixed(size as usize * 8);
     match signedness {
         Signedness::Signed => quote! {
-            ::nisba::const_try!(r.next_varint_signed(#bit_width)) as #ty
+            ::nisba::const_try!(unsafe { r.next_varint_signed(#bit_width) }) as #ty
         },
         Signedness::Unsigned => quote! {
-            ::nisba::const_try!(r.next_varint_unsigned(#bit_width)) as #ty
+            ::nisba::const_try!(unsafe { r.next_varint_unsigned(#bit_width) }) as #ty
         },
     }
 }

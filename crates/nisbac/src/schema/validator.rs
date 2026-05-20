@@ -85,6 +85,9 @@ impl Validator {
                 Err(Error::UnusedSequence(Handle(idx)))?;
             }
         }
+        for referers in &mut self.referrers {
+            referers.dedup();
+        }
         Ok(())
     }
 }
