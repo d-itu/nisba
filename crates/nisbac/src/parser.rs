@@ -182,12 +182,6 @@ trait Rule {
             expected: Self::EXPECTED,
         })
     }
-    // fn map<R, F: FnOnce(Self::Item) -> R>(self, func: F) -> Map<Self, F>
-    // where
-    //     Self: Sized,
-    // {
-    //     Map { rule: self, func }
-    // }
 }
 
 const fn map<T: Rule + Sized, R, F: FuncOnce<T::Item, Return = R>>(rule: T, func: F) -> Map<T, F> {
