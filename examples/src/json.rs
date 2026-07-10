@@ -90,7 +90,7 @@ impl Parser<'_> {
         match self.peek() {
             Some(b']') => {
                 self.next();
-                return encode::Array { items };
+                encode::Array { items }
             }
             _ => loop {
                 items.push(self.parse_json());
@@ -126,7 +126,7 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'}') => {
                 self.next();
-                return encode::Object { entries };
+                encode::Object { entries }
             }
             _ => loop {
                 entries.push(self.parse_entry());

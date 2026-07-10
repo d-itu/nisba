@@ -24,22 +24,30 @@ impl<'a> Encoder<'a> {
             marker: PhantomData,
         }
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub const unsafe fn push_u8(&mut self, byte: u8) {
         unsafe {
             *self.ptr = byte;
             self.ptr = self.ptr.add(1);
         }
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub const unsafe fn push_bytes(&mut self, bytes: &[u8]) {
         unsafe {
             bytes.as_ptr().copy_to_nonoverlapping(self.ptr, bytes.len());
             self.ptr = self.ptr.add(bytes.len());
         }
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub const unsafe fn push_unsigned(&mut self, value: u64, size: usize) {
         let bytes = value.to_le_bytes();
         unsafe { self.push_bytes(slice::from_raw_parts(bytes.as_ptr(), size)) };
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub const unsafe fn push_varint_unsigned(&mut self, mut value: u64) {
         while value >= 0x80 {
             unsafe { self.push_u8((value & 0x7f) as u8 | 0x80) };
@@ -47,16 +55,22 @@ impl<'a> Encoder<'a> {
         }
         unsafe { self.push_u8(value as u8) };
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub const unsafe fn push_varint_signed(&mut self, value: i64) {
         unsafe { self.push_varint_unsigned(zigzag(value)) };
     }
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Self::ptr`] has enough capacity.
     pub unsafe fn push(&mut self, value: &impl Encode) {
         unsafe { value.encode(self) }
     }
 }
 
-pub unsafe trait Encode {
+pub trait Encode {
     fn prepare(&self) -> Result<usize>;
+    /// # Safety
+    /// Caller must ensure the buffer behind [`Encoder::ptr`] has enough capacity.
     unsafe fn encode(&self, w: &mut Encoder);
 }
 
@@ -69,7 +83,7 @@ pub const fn varint_calc_size_unsigned(value: u64) -> usize {
     const fn max(x: u32, y: u32) -> u32 {
         if x > y { x } else { y }
     }
-    max((64 - value.leading_zeros() + 6) / 7, 1) as _
+    max((64 - value.leading_zeros()).div_ceil(7), 1) as _
 }
 
 pub const fn varint_calc_size_signed(value: i64) -> usize {

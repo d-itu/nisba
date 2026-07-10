@@ -1,9 +1,4 @@
-use std::{
-    collections::hash_map,
-    fmt::Display,
-    mem::{self, MaybeUninit},
-    result,
-};
+use std::{collections::hash_map, fmt::Display, mem::MaybeUninit, result};
 
 use ahash::{AHashMap, AHashSet};
 use thiserror::Error;
@@ -78,14 +73,16 @@ impl Arena {
     }
     fn finish(self) -> result::Result<Schema, Error> {
         let mut unknown = vec![];
-        for x in self.unassigned {
-            if let Some(x) = x {
-                unknown.push(x);
-            }
+        for x in self.unassigned.into_iter().flatten() {
+            unknown.push(x);
         }
         if unknown.is_empty() {
             return Ok(Schema {
-                definitions: unsafe { mem::transmute(self.assigned) },
+                definitions: {
+                    let (ptr, len, cap) = self.assigned.into_raw_parts();
+                    // TODO: cast_init
+                    unsafe { Vec::from_raw_parts(ptr.cast(), len, cap) }
+                },
             });
         }
         Err(Error::UnknownTypeName(unknown))
@@ -367,14 +364,17 @@ impl ast::Number {
     }
     fn index_ty(self) -> Result<IndexType> {
         Ok(match self {
-            ast::Number::Value(x) => {
-                let value = x / 8;
-                if x % 8 != 0 {
-                    Err(ErrorKind::InvalidIndexType)?
-                }
-                let value: u8 = value.try_into().map_err(|_| ErrorKind::InvalidIndexType)?;
-                unsafe { mem::transmute(value) }
-            }
+            ast::Number::Value(x) => match x {
+                8 => IndexType::U8,
+                16 => IndexType::U16,
+                24 => IndexType::U24,
+                32 => IndexType::U32,
+                40 => IndexType::U40,
+                48 => IndexType::U48,
+                56 => IndexType::U56,
+                64 => IndexType::U64,
+                _ => Err(ErrorKind::InvalidIndexType)?,
+            },
             ast::Number::Overflow => Err(ErrorKind::IntegerPrimitiveTooBig)?,
         })
     }
@@ -396,7 +396,7 @@ impl Definition {
 
 impl Spanned<ast::LenType> {
     fn resolve(&self) -> SpannedResult<LenType> {
-        Ok(match &self.item {
+        match &self.item {
             ast::LenType::Fixed(ast::Unsigned(number)) => {
                 LenType::from_bit_width(number.int_bit_width().map_err(self.span.spanned())?)
             }
@@ -405,7 +405,7 @@ impl Spanned<ast::LenType> {
                 span,
             })) => LenType::from_varint_size(x.varint_size().map_err(span.spanned())?),
         }
-        .map_err(self.span.spanned())?)
+        .map_err(self.span.spanned())
     }
 }
 

@@ -61,6 +61,9 @@ impl<'a> Decoder<'a> {
     pub const fn next_u8_array<const N: usize>(&mut self) -> Result<[u8; N]> {
         unsafe { Ok(*const_try!(self.next_bytes(N)).as_ptr().cast()) }
     }
+
+    /// # Safety
+    /// Rest size must be larger than `size`.
     pub const unsafe fn next_unsigned(&mut self, size: usize) -> Result<u64> {
         let mut result = 0u64;
         let source = const_try!(self.next_bytes(size));
@@ -71,6 +74,9 @@ impl<'a> Decoder<'a> {
         }
         Ok(u64::from_le(result))
     }
+
+    /// # Safety
+    /// Rest size must be larger than `size`.
     pub const unsafe fn next_varint_unsigned(&mut self, bit_width: usize) -> Result<u64> {
         let mut value = 0;
         let mut shift = 0;
@@ -87,16 +93,20 @@ impl<'a> Decoder<'a> {
         }
         Ok(value)
     }
+
+    /// # Safety
+    /// Rest size must be larger than `size`.
     pub const unsafe fn next_varint_signed(&mut self, bit_width: usize) -> Result<i64> {
         let n = unsafe { const_try!(self.next_varint_unsigned(bit_width)) };
         Ok((n >> 1).cast_signed() ^ -((n & 1).cast_signed()))
     }
-    pub fn next<T: Decode<'a>>(&mut self) -> Result<T> {
+
+    pub fn decode<T: Decode<'a>>(&mut self) -> Result<T> {
         T::decode(self)
     }
 }
 
-pub unsafe trait Decode<'a>: Sized {
+pub trait Decode<'a>: Sized {
     fn decode(r: &mut Decoder<'a>) -> Result<Self>;
 }
 
@@ -108,18 +118,12 @@ pub trait Length: for<'a> Decode<'a> + Sealed {
     fn value(self) -> u64;
 }
 
-impl<T> Primitive<T> {
-    pub const fn decode(r: &mut Decoder<'_>) -> Result<Self> {
+impl<T> Decode<'_> for Primitive<T> {
+    fn decode(r: &mut Decoder<'_>) -> Result<Self> {
         let mut result = MaybeUninit::uninit();
         let src = const_try!(r.next_bytes(mem::size_of::<T>()));
         unsafe { (&raw mut result as *mut u8).copy_from_nonoverlapping(src.as_ptr(), src.len()) };
         unsafe { result.assume_init() }
-    }
-}
-
-unsafe impl<T> Decode<'_> for Primitive<T> {
-    fn decode(r: &mut Decoder<'_>) -> Result<Self> {
-        Self::decode(r)
     }
 }
 
@@ -138,7 +142,7 @@ impl<T> Element for Primitive<T> {
     type Output = T;
 }
 
-unsafe impl<const N: usize> Decode<'_> for Integer<N> {
+impl<const N: usize> Decode<'_> for Integer<N> {
     fn decode(r: &mut Decoder) -> Result<Self> {
         r.next_u8_array::<N>().map(Self)
     }
@@ -168,7 +172,7 @@ macro_rules! varint_unsigned {
                 Ok(Self(value as _))
             }
         }
-        unsafe impl Decode<'_> for Varint<$t> {
+        impl Decode<'_> for Varint<$t> {
             fn decode(r: &mut Decoder<'_>) -> Result<Self> {
                 Self::decode(r)
             }
@@ -193,7 +197,7 @@ macro_rules! varint_signed {
                 Ok(Self(value as _))
             }
         }
-        unsafe impl Decode<'_> for Varint<$t> {
+        impl Decode<'_> for Varint<$t> {
             fn decode(r: &mut Decoder<'_>) -> Result<Self> {
                 Self::decode(r)
             }
@@ -213,7 +217,7 @@ pub struct Slice<'a, T, L> {
 
 impl<T, L> Clone for Slice<'_, T, L> {
     fn clone(&self) -> Self {
-        Self::new(self.as_bytes())
+        *self
     }
 }
 
@@ -233,21 +237,28 @@ impl<'a, T, L> Slice<'a, T, L> {
     pub const fn len(&self) -> usize {
         self.len / mem::size_of::<T>()
     }
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub const fn get(&self, index: usize) -> Option<T> {
         if index >= self.len {
             return None;
         }
         Some(unsafe { self.get_unchecked(index) })
     }
+    /// # Safety
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*
     pub const unsafe fn get_unchecked(&self, index: usize) -> T {
         let byte_index = index * mem::size_of::<T>();
         let ptr: *const T = unsafe { self.ptr.add(byte_index) }.cast();
         unsafe { ptr.read_unaligned() }
     }
-    pub fn next(&mut self) -> Option<T::Output>
-    where
-        T: Element,
-    {
+}
+
+impl<'a, T: Element, L> Iterator for Slice<'a, T, L> {
+    type Item = T::Output;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
@@ -256,14 +267,6 @@ impl<'a, T, L> Slice<'a, T, L> {
         self.ptr = unsafe { self.ptr.add(mem::size_of::<T>()) };
         self.len -= 1;
         Some(unsafe { (&raw const result).cast::<T::Output>().read() })
-    }
-}
-
-impl<'a, T: Element, L> Iterator for Slice<'a, T, L> {
-    type Item = T::Output;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -278,9 +281,9 @@ impl<'a, T: Element, L> ExactSizeIterator for Slice<'a, T, L> {
     }
 }
 
-unsafe impl<'a, T, L: Length> Decode<'a> for Slice<'a, T, L> {
+impl<'a, T, L: Length> Decode<'a> for Slice<'a, T, L> {
     fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len: L = r.next()?;
+        let len: L = r.decode()?;
         let size = len.value() as usize * mem::size_of::<T>();
         let data = r.next_bytes(size)?;
         Ok(Self::new(data))
@@ -300,10 +303,7 @@ pub struct Stream<'a, T, L> {
 
 impl<T, L> Clone for Stream<'_, T, L> {
     fn clone(&self) -> Self {
-        Self {
-            decoder: self.decoder,
-            marker: PhantomData,
-        }
+        *self
     }
 }
 
@@ -328,13 +328,13 @@ impl<'a, T: Decode<'a>, L> Iterator for Stream<'a, T, L> {
         if self.decoder.remaining_len() == 0 {
             return None;
         }
-        Some(self.decoder.next())
+        Some(self.decoder.decode())
     }
 }
 
-unsafe impl<'a, T: Decode<'a>, L: Length> Decode<'a> for Stream<'a, T, L> {
+impl<'a, T: Decode<'a>, L: Length> Decode<'a> for Stream<'a, T, L> {
     fn decode(r: &mut Decoder<'a>) -> Result<Self> {
-        let len: L = r.next()?;
+        let len: L = r.decode()?;
         let bytes = r.next_bytes(len.value() as _)?;
         Ok(Self::new(Decoder::new(bytes)))
     }
@@ -347,5 +347,5 @@ impl<'a, T: Debug + Decode<'a>, L> Debug for Stream<'a, T, L> {
 }
 
 pub fn decode<'a, T: Decode<'a>>(data: &'a [u8]) -> Result<T> {
-    Decoder::new(data).next()
+    Decoder::new(data).decode()
 }

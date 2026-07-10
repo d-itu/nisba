@@ -146,7 +146,6 @@ impl Packed {
                 quote! {
                     unsafe { w.push_bytes(&self.0) }
                 },
-                quote!(const),
             ),
             CodeGenKind::Decode => impl_decode(
                 &name,
@@ -179,7 +178,6 @@ impl Packed {
                         ))
                     }
                 },
-                quote!(const),
             ),
             CodeGenKind::Decode => impl_decode(&name, None, decode_primitive(quote!(Self))),
         };
@@ -228,7 +226,6 @@ impl Struct {
             quote! {
                 #(#encode)*
             },
-            quote!(),
         )
     }
     fn generate_decode(
@@ -346,7 +343,6 @@ impl Enum {
                             #(#encode)*
                         }
                     },
-                    quote!(),
                 )
             }
             CodeGenKind::Decode => {
@@ -469,7 +465,6 @@ impl Dict {
                         unsafe { w.push_unsigned(0 #( | #bitmap)*, #size); }
                         #(#encode)*
                     },
-                    quote!(),
                 )
             }
             CodeGenKind::Decode => {
@@ -614,25 +609,17 @@ fn impl_encode(
     lifetime: impl ToTokens,
     prepare: impl ToTokens,
     encode: impl ToTokens,
-    con: impl ToTokens,
 ) -> TokenStream {
     quote! {
-        impl #lifetime #name #lifetime {
+        impl #lifetime ::nisba::encode::Encode for #name #lifetime {
             #[inline]
-            pub #con fn prepare(&self) -> ::nisba::encode::Result<usize> {
+            #[allow(clippy::identity_op , clippy::needless_borrow)]
+            fn prepare(&self) -> ::nisba::encode::Result<usize> {
                 Ok(#prepare)
             }
-            pub #con unsafe fn encode(&self, w: &mut ::nisba::encode::Encoder) {
-                #encode
-            }
-        }
-        unsafe impl #lifetime ::nisba::encode::Encode for #name #lifetime {
-            #[inline]
-            fn prepare(&self) -> ::nisba::encode::Result<usize> {
-                self.prepare()
-            }
+            #[allow(clippy::needless_borrow)]
             unsafe fn encode(&self, w: &mut ::nisba::encode::Encoder) {
-                unsafe { self.encode(w) }
+                #encode
             }
         }
     }
@@ -645,7 +632,7 @@ fn impl_decode(
 ) -> TokenStream {
     if let Some(lifetime) = lifetime {
         quote! {
-            unsafe impl #lifetime ::nisba::decode::Decode #lifetime for #name #lifetime {
+            impl #lifetime ::nisba::decode::Decode #lifetime for #name #lifetime {
                 fn decode(r: &mut ::nisba::decode::Decoder #lifetime) -> ::nisba::decode::Result<Self> {
                     Ok(#decode)
                 }
@@ -653,7 +640,7 @@ fn impl_decode(
         }
     } else {
         quote! {
-            unsafe impl ::nisba::decode::Decode<'_> for #name {
+            impl ::nisba::decode::Decode<'_> for #name {
                 fn decode(r: &mut ::nisba::decode::Decoder) -> ::nisba::decode::Result<Self> {
                     Ok(#decode)
                 }
@@ -938,8 +925,7 @@ impl Type {
                             let prepare = elem_ty.prepare(quote!(x), ctx, false);
                             quote!({
                                 let mut byte_count = 0;
-                                let mut iter = #expr.iter();
-                                while let Some(x) = iter.next() {
+                                for x in #expr.iter() {
                                     byte_count += #prepare;
                                 }
                                 byte_count
@@ -971,8 +957,7 @@ impl Type {
                     });
                     quote!({
                         let mut byte_count = 0;
-                        let mut iter = #expr.iter();
-                        while let Some(x) = iter.next() {
+                        for x in #expr.iter() {
                             byte_count += #prepare;
                         }
                         #validate
@@ -1019,8 +1004,7 @@ impl Type {
                     let elems = elem_ty.encode(quote!(x), ctx);
                     quote! {
                         #len
-                        let mut iter = #expr.iter();
-                        while let Some(x) = iter.next() {
+                        for x in #expr.iter() {
                             #elems
                         }
                     }
@@ -1031,13 +1015,11 @@ impl Type {
                     let elems = elem_ty.encode(quote!(x), ctx);
                     quote! {
                         let mut byte_count = 0;
-                        let mut iter = #expr.iter();
-                        while let Some(x) = iter.next() {
+                        for x in #expr.iter() {
                             byte_count += #count;
                         }
                         #len
-                        let mut iter = #expr.iter();
-                        while let Some(x) = iter.next() {
+                        for x in #expr.iter() {
                             #elems
                         }
                     }

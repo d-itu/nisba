@@ -144,10 +144,10 @@ impl Definition {
             }
             Definition::Struct(Struct { members, .. }) => {
                 for &Member { ty, .. } in members {
-                    if let BitWidth::Fixed(x) = ty.validate(validator, schema, handle)? {
-                        if x % 8 != 0 {
-                            Err(Error::RequiresByteAligned)?
-                        }
+                    if let BitWidth::Fixed(x) = ty.validate(validator, schema, handle)?
+                        && x % 8 != 0
+                    {
+                        Err(Error::RequiresByteAligned)?
                     }
                 }
                 BitWidth::Variable
@@ -156,9 +156,9 @@ impl Definition {
                 index_ty,
                 ref members,
                 ..
-            }) => match &members[..] {
-                &[] => BitWidth::Fixed(0),
-                &[ref first, ref rest @ ..] => {
+            }) => match members[..] {
+                [] => BitWidth::Fixed(0),
+                [ref first, ref rest @ ..] => {
                     let index_size = index_ty as usize;
                     let index_bit_width = index_size * 8;
                     let index_cap = 1u64 << index_bit_width;

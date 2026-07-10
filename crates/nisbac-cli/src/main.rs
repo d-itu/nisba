@@ -86,6 +86,6 @@ fn main() {
     if let Some(path) = args.output {
         fs::write(path, output).unwrap();
     } else {
-        io::stdout().write(output.as_bytes()).unwrap();
+        io::stdout().write_all(output.as_bytes()).unwrap();
     }
 }
