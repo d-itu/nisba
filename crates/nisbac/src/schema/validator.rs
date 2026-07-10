@@ -229,6 +229,7 @@ impl Definition {
                 }
                 res
             }
+            Definition::Extern(_) => BitWidth::Variable,
         };
         validator.validated(handle, res);
         Ok(res)

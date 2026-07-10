@@ -29,13 +29,13 @@ pub struct Spanned<T> {
 impl<T> Spanned<T> {
     pub fn map<U, F: FnOnce(&T) -> U>(&self, f: F) -> Spanned<U> {
         Spanned {
-            span: self.span.clone(),
+            span: self.span,
             item: f(&self.item),
         }
     }
     pub fn replace<U>(&self, item: U) -> Spanned<U> {
         Spanned {
-            span: self.span.clone(),
+            span: self.span,
             item,
         }
     }

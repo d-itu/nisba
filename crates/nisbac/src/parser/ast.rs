@@ -84,7 +84,7 @@ pub struct IndexedMember {
 
 #[derive(Debug, PartialEq)]
 pub enum Definition {
-    Primitive(Spanned<Builtin>),
+    Extern(Option<Spanned<Builtin>>),
     StructLike {
         kind: StructKind,
         members: Vec<Spanned<Member>>,

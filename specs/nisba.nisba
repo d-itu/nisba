@@ -1,0 +1,94 @@
+@struct ident {
+  value: @vector(@varint(u32) u8)
+}
+
+@struct schema {
+  defs: @stream(@varint(u32) typedef)
+}
+
+@enum(u8) typedef {
+  extern: extern
+  primitive: primitive
+  vector: vector
+  stream: stream
+  packed: packed
+  struct: struct
+  enum: enum
+  dict: dict
+}
+
+@struct handle {
+  id: @varint(u64)
+}
+
+@enum(u8) type {
+  integer: integer
+  varint: integer
+  definition: handle
+}
+
+@struct integer {
+  bit_width: @varint(u16)
+  signed: signedness
+}
+
+@enum(u8) signedness {
+  unsigned
+  signed
+}
+
+@struct primitive {
+  name: ident
+  bit_width: @varint(u16)
+}
+
+@struct extern {
+  name: ident
+}
+
+@packed len_type {
+  repr: u8
+}
+
+@struct vector {
+  len_type: len_type
+  element_type: type
+}
+
+@struct stream {
+  len_type: len_type
+  element_type: type
+}
+
+@struct packed {
+  name: ident
+  members: @stream(@varint(u32) member)
+}
+
+@struct struct {
+  name: ident
+  members: @stream(@varint(u32) member)
+}
+
+@struct member {
+  name: ident
+  ty: type
+}
+
+@struct enum {
+  name: ident
+  discriminant_len: u8
+  members: @stream(@varint(u32) tagged_member)
+}
+
+@struct dict {
+  name: ident
+  discriminant_len: u8
+  members: @stream(@varint(u32) tagged_member)
+}
+
+@struct tagged_member {
+  name: ident
+  discriminant: @varint(u64)
+  ty: type
+}

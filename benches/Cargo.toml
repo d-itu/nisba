@@ -11,12 +11,12 @@ name = "json"
 bincode-next = "3.0.0-rc.11"
 criterion = "0.8.2"
 nisba = { path = "../crates/nisba" }
-protobuf = "4.34.1-release"
-protobuf-well-known-types = "4.34.1-release"
+protobuf = "4.35.1-release"
+protobuf-well-known-types = "4.35.1-release"
 sonic-rs = "0.5.8"
 
 [build-dependencies]
 nisbac = { path = "../crates/nisbac" }
-protobuf-codegen = "4.34.1-release"
-protobuf-well-known-types = "4.34.1-release"
+protobuf-codegen = "4.35.1-release"
+protobuf-well-known-types = "4.35.1-release"
 reqwest = { version = "0.13.2", features = ["blocking"] }

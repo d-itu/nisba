@@ -16,6 +16,7 @@ pub enum Definition {
     Struct(Struct),
     Enum(Enum),
     Dict(Dict),
+    Extern(Ident),
 }
 
 #[derive(Debug)]

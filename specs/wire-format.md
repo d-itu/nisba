@@ -31,7 +31,6 @@ Nisba types are divided into:
 
 - Fundamental Types
   - `integer`
-  - `primitive`
   - `varint`
 - Containers
   - `vector`
@@ -41,6 +40,8 @@ Nisba types are divided into:
   - `struct`
   - `enum`
   - `dict`
+- External Types
+  - `extern`
 
 Some types can be `fixed-sized`, whose size are known at compilation time.
 
@@ -88,17 +89,9 @@ When decoding:
 
 ---
 
-### Primitive
-
-A primitive is a semantic newtype over a byte-aligned integer type.
-
-Primitives are encoded as their underlying integer type.
-
----
-
 ### Vector
 
-Vector is a sequence of fixed-sized elements with **length** prefix:
+Vector is a sequence of elements with **length** prefix:
 
 ```
 [length] [elements...]
@@ -131,6 +124,8 @@ Where:
 - Length type is same with `vector`'s length type.
 - Element type in stream may have variable size.
 
+Streams support lazy deserializing.
+
 ### Packed
 
 Packed defines a packed structure which supports bit-field:
@@ -142,7 +137,7 @@ Packed defines a packed structure which supports bit-field:
 Where:
 
 - Members must be fixed-sized types.
-- Total bit size must be multiple of 8.
+- Total bit-width must be multiple of 8.
 - Bit numbering follows LSB-first within byte.
 
 ---
@@ -188,6 +183,16 @@ Dict represents optional fields using bitmap:
 
 ---
 
+### External
+
+External types are not fixed-sized. Serializer and deserializer code is not generated.
+Users should implement related interfaces by themselves.
+
+An external type can have an underlying integer representation, in which case
+external types are encoded as their underlying integer type.
+
+---
+
 ## Concepts
 
 ### Fixed-Sized
@@ -195,7 +200,7 @@ Dict represents optional fields using bitmap:
 A type is fixed-sized if and only if it is:
 
 - `integer`
-- `primitive`
+- `extern`, if and only if it has a underlying integer type
 - `packed`
 - `enum`, if and only if:
   - all variants are fixed-sized, and

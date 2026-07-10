@@ -110,6 +110,7 @@ pub fn generate(schema: &Validated, kind: CodeGenKind, config: Config) -> TokenS
                 Definition::Struct(x) => x.generate(&mut ctx, has_lifetime),
                 Definition::Enum(x) => x.generate(&mut ctx, has_lifetime),
                 Definition::Dict(x) => x.generate(&mut ctx, has_lifetime),
+                Definition::Extern(_) => quote!(),
             }
         });
     quote! {
@@ -140,7 +141,7 @@ impl Packed {
         let impls = match ctx.kind {
             CodeGenKind::Encode => impl_encode(
                 &name,
-                &quote!(),
+                quote!(),
                 quote!(self.0.len()),
                 quote! {
                     unsafe { w.push_bytes(&self.0) }
@@ -168,7 +169,7 @@ impl Packed {
         let impls = match ctx.kind {
             CodeGenKind::Encode => impl_encode(
                 &name,
-                &quote!(),
+                quote!(),
                 quote!(::core::mem::size_of::<Self>()),
                 quote! {
                     unsafe {
@@ -266,7 +267,7 @@ impl Enum {
     fn generate(&self, ctx: &mut Context, has_lifetime: bool) -> TokenStream {
         let members = self.members.iter().map(|IndexedMember { member, .. }| {
             let ty = match member.ty {
-                Type::Integer { bit_width, .. } if bit_width == 0 => quote!(),
+                Type::Integer { bit_width: 0, .. } => quote!(),
                 _ => {
                     let ty = member.ty.generate(ctx, false);
                     quote!((#ty))
@@ -291,7 +292,7 @@ impl Enum {
                      }| {
                         let cons = name.camel_case();
                         match ty {
-                            &Type::Integer { bit_width, .. } if bit_width == 0 => quote! {
+                            &Type::Integer { bit_width: 0, .. } => quote! {
                                 Self::#cons => 0,
                             },
                             _ => {
@@ -316,7 +317,7 @@ impl Enum {
                             }
                         };
                         match ty {
-                            Type::Integer { bit_width, .. } if bit_width == 0 => quote! {
+                            Type::Integer { bit_width: 0, .. } => quote! {
                                 Self::#cons => #index
                             },
                             _ => {
@@ -356,7 +357,7 @@ impl Enum {
                      }| {
                         let cons = name.camel_case();
                         match ty {
-                            Type::Integer { bit_width, .. } if bit_width == 0 => quote! {
+                            Type::Integer { bit_width: 0, .. } => quote! {
                                 #index => Self::#cons,
                             },
                             _ => {
@@ -448,7 +449,7 @@ impl Dict {
                      }| {
                         let member = name.no_rename();
                         match ty {
-                            Type::Integer { bit_width, .. } if bit_width == 0 => quote! {},
+                            Type::Integer { bit_width: 0, .. } => quote! {},
                             _ => {
                                 let encode = ty.encode(quote!(x), ctx);
                                 quote! {
@@ -573,7 +574,7 @@ impl LenType {
         }
     }
     fn max_size(self) -> Literal {
-        Literal::usize_unsuffixed((1usize << self.bit_width() - 1).wrapping_sub(1))
+        Literal::usize_unsuffixed((1usize << (self.bit_width() - 1)).wrapping_sub(1))
     }
 }
 
@@ -874,7 +875,8 @@ impl Type {
             Type::Allocated(handle) => {
                 let has_lifetime = ctx.has_lifetime[handle.0] && ctx.kind == CodeGenKind::Decode;
                 match &ctx.schema.schema.definitions[handle.0] {
-                    Definition::Primitive(Primitive { name, .. }) => {
+                    Definition::Primitive(Primitive { name, .. }) | Definition::Extern(name) => {
+                        // TODO: support external types with lifetime
                         let ty = name.no_rename();
                         quote!(#ty)
                     }
@@ -980,7 +982,8 @@ impl Type {
                 Definition::Packed(_)
                 | Definition::Struct(_)
                 | Definition::Enum(_)
-                | Definition::Dict(_) => match validate {
+                | Definition::Dict(_)
+                | Definition::Extern(_) => match validate {
                     true => quote! { ::nisba::const_try!(#expr.prepare()) },
                     false => quote! { unsafe { #expr.prepare().unwrap_unchecked() } },
                 },
@@ -1043,7 +1046,8 @@ impl Type {
                 Definition::Packed(_)
                 | Definition::Struct(_)
                 | Definition::Enum(_)
-                | Definition::Dict(_) => quote! {
+                | Definition::Dict(_)
+                | Definition::Extern(_) => quote! {
                     unsafe { #expr.encode(w); }
                 },
             },
@@ -1078,7 +1082,8 @@ impl Type {
                 Definition::Packed(Packed { name, .. })
                 | Definition::Struct(Struct { name, .. })
                 | Definition::Enum(Enum { name, .. })
-                | Definition::Dict(Dict { name, .. }) => {
+                | Definition::Dict(Dict { name, .. })
+                | Definition::Extern(name) => {
                     let ty = name.camel_case();
                     quote! {
                         ::nisba::const_try!(<#ty as ::nisba::decode::Decode>::decode(r))

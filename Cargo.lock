@@ -917,6 +917,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 
 [[package]]
+name = "linkme"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e83272d46373fb8decca684579ac3e7c8f3d71d4cc3aa693df8759e260ae41cf"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32d59e20403c7d08fe62b4376edfe5c7fb2ef1e6b1465379686d0f21c8df444b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1202,26 +1222,27 @@ dependencies = [
 
 [[package]]
 name = "protobuf"
-version = "4.34.1-release"
+version = "4.35.1-release"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5af3157e12bb2193b1ee85fd61fe9ebe737b63a22ab3774d7cbb7fb5f32b6425"
+checksum = "a169648cc34d6f327fea8919ca63f38261fb26405fde8879745dc0a483db328e"
 dependencies = [
  "cc",
+ "linkme",
  "paste-complete",
  "protobuf-macros",
 ]
 
 [[package]]
 name = "protobuf-codegen"
-version = "4.34.1-release"
+version = "4.35.1-release"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eae99d63994a6a24b8903140dba6ee369c68933faaf09679655b4aaba4e798f"
+checksum = "19dffd9a419f79bca4fad6bc09d5ead0e932596b76e4b3d7e79acc7e2eba4b98"
 
 [[package]]
 name = "protobuf-macros"
-version = "4.34.1-release"
+version = "4.35.1-release"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b19d8dd07383acc9acc88034d66dec66da7ef87f54df25c8c924e5245606409"
+checksum = "fddf7218148e92862511304cfde3ef07ce109e1f03e830601833b9f0cb901a75"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -1229,9 +1250,9 @@ dependencies = [
 
 [[package]]
 name = "protobuf-well-known-types"
-version = "4.34.1-release"
+version = "4.35.1-release"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94d5d9bc1d6651280e9e0dfa75eba54b26f40de6f0a7d08e57f69806ebb887d5"
+checksum = "d7a458cbf1352c531efdfbd2499f2814cfaa7dd59c9fbf88f36efb3f08ca2b2c"
 dependencies = [
  "protobuf",
  "protobuf-codegen",

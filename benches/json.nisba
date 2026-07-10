@@ -1,4 +1,4 @@
-@primitive(u64) f64
+@extern(u64) f64
 
 @struct string {
   data: @vector(@varint(u32) u8)

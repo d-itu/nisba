@@ -10,7 +10,7 @@ Nisba schema language is a DSL used for defining types for the Nisba Binary Mess
 
 A nisba file consists of definitions of:
 
-- `primitive`
+- `extern`
 - `packed`
 - `struct`
 - `enum`
@@ -125,16 +125,18 @@ Example:
 
 ## Definitions
 
-### Primitive
+### External
 
 ```
-@primitive <name> <integer_type>
+@extern(<integer>) <name>
+@extern <name>
 ```
 
 Example:
 
 ```
-@primitive(u32) f32
+@extern(u32) f32
+@extern message
 ```
 
 ### Struct & Packed
@@ -205,9 +207,9 @@ Parsing expression grammar(PEG) is used to formally describe nisba syntax.
 
 ```
 doc := BEGIN ws* (definition ws*)* END
-definition := primitive | struct-like | indexed-struct-like
+definition := extern | struct-like | indexed-struct-like
 
-primitive := "@primitive" ws* "(" ws* builtin ws* ")" ws* valid-name
+extern := "@extern" ws* ("(" ws* builtin ws* ")" ws*)? valid-name
 
 struct-like := ("@strcut" | "@packed") ws+ valid-name ws* "{" (ws* member)* ws* "}"
 member := identifier ws* ":" ws* type

@@ -9,7 +9,7 @@ use super::*;
 
 impl Parser<'_> {
     fn ws(&mut self) {
-        while let Ok(_) = self.match_rule(WHITE_SPACE) {}
+        while self.match_rule(WHITE_SPACE).is_ok() {}
     }
     fn ws_plus(&mut self) -> ParseResult<()> {
         self.match_rule(WHITE_SPACE)?;
@@ -233,14 +233,10 @@ impl ast::Number {
     fn update(&mut self, mul: u64, add: u64) {
         match self {
             ast::Number::Value(value) => {
-                match value.checked_mul(mul) {
+                match value.checked_mul(mul).and_then(|x| x.checked_add(add)) {
                     Some(x) => *value = x,
-                    None => return *self = Self::Overflow,
-                };
-                match value.checked_add(add) {
-                    Some(x) => *value = x,
-                    None => return *self = Self::Overflow,
-                };
+                    None => *self = Self::Overflow,
+                }
             }
             ast::Number::Overflow => {}
         }
@@ -257,7 +253,7 @@ impl Rule for Bin {
         parser.match_char('0')?;
         parser.match_set("bB")?;
 
-        while let Ok(_) = parser.match_char('_') {}
+        while parser.match_char('_').is_ok() {}
 
         let mut result = ast::Number::ZERO;
 
@@ -290,7 +286,7 @@ impl Rule for Hex {
         parser.match_char('0')?;
         parser.match_set("xX")?;
 
-        while let Ok(_) = parser.match_char('_') {}
+        while parser.match_char('_').is_ok() {}
 
         let mut result = ast::Number::ZERO;
 
@@ -389,6 +385,7 @@ fn test_ident() {
 }
 
 #[test]
+#[allow(clippy::mixed_case_hex_literals)]
 fn test_integer() {
     let bin = Bin.parse(&mut Parser::new("0b_1100_")).unwrap();
     assert_eq!(bin, ast::Number::Value(0b1100));
@@ -486,9 +483,9 @@ impl Rule for SequenceLike {
     const EXPECTED: Tree = Tree::Rule("sequence-like");
 
     fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        let kind = if let Ok(_) = parser.match_str("@vector") {
+        let kind = if parser.match_str("@vector").is_ok() {
             ast::SequenceKind::Vector
-        } else if let Ok(_) = parser.match_str("@stream") {
+        } else if parser.match_str("@stream").is_ok() {
             ast::SequenceKind::Stream
         } else {
             Err(Tree::Rule(r#""@vector" | "@stream""#))?
@@ -573,7 +570,7 @@ impl Rule for Builtin {
     const EXPECTED: Tree = Tree::Rule("builtin");
 
     fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        if let Ok(_) = parser.match_str("void") {
+        if parser.match_str("void").is_ok() {
             return Ok(ast::Builtin::Void);
         }
         if let Ok(x) = parser.match_rule(Signed) {
@@ -609,25 +606,37 @@ impl Rule for ValidName {
     }
 }
 
-/// "@primitive" ws* "(" ws* builtin ws* ")" ws* typename
-struct Primitive;
-impl Rule for Primitive {
+/// "@extern" ws* ("(" ws* builtin ws* ")" ws*)? typename
+struct Extern;
+impl Rule for Extern {
     type Item = ast::NamedDefinition;
-    const EXPECTED: Tree = Tree::Rule("primitive");
+    const EXPECTED: Tree = Tree::Rule("extern");
 
     fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        parser.match_str("@primitive")?;
+        parser.match_str("@extern")?;
         parser.ws();
-        parser.match_char('(')?;
-        parser.ws();
-        let ty = parser.parse_span(Builtin)?;
-        parser.ws();
-        parser.match_char(')')?;
-        parser.ws();
+
+        struct Inner;
+        impl Rule for Inner {
+            type Item = ast::Builtin;
+            const EXPECTED: Tree = Tree::Rule("extern");
+
+            fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
+                parser.match_char('(')?;
+                parser.ws();
+                let ty = parser.parse(Builtin)?;
+                parser.ws();
+                parser.match_char(')')?;
+                parser.ws();
+                Ok(ty)
+            }
+        }
+        let ty = parser.match_span(Inner).ok();
+
         let name = parser.parse_span(ValidName)?;
         Ok(ast::NamedDefinition {
             name,
-            def: ast::Definition::Primitive(ty),
+            def: ast::Definition::Extern(ty),
         })
     }
 }
@@ -669,9 +678,9 @@ impl Rule for StructLike {
     const EXPECTED: Tree = Tree::Rule("struct | packed");
 
     fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        let kind = if let Ok(_) = parser.match_str("@struct") {
+        let kind = if parser.match_str("@struct").is_ok() {
             ast::StructKind::Struct
-        } else if let Ok(_) = parser.match_str("@packed") {
+        } else if parser.match_str("@packed").is_ok() {
             ast::StructKind::Packed
         } else {
             Err(Tree::Rule(r#""@strcut" | "@packed""#))?
@@ -734,9 +743,9 @@ impl Rule for IndexedStructLike {
     const EXPECTED: Tree = Tree::Rule("enum | dict");
 
     fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        let kind = if let Ok(_) = parser.match_str("@enum") {
+        let kind = if parser.match_str("@enum").is_ok() {
             ast::IndexedStructKind::Enum
-        } else if let Ok(_) = parser.match_str("@dict") {
+        } else if parser.match_str("@dict").is_ok() {
             ast::IndexedStructKind::Dict
         } else {
             Err(Tree::Rule(r#""@enum" | "@dict""#))?
@@ -775,8 +784,8 @@ impl Rule for IndexedStructLike {
 }
 
 /// primitive | struct-like | indexed-struct-like
-type Definition = variant_type!(Primitive, StructLike, IndexedStructLike);
-const DEFINITION: Definition = variant!(Primitive, StructLike, IndexedStructLike);
+type Definition = variant_type!(Extern, StructLike, IndexedStructLike);
+const DEFINITION: Definition = variant!(Extern, StructLike, IndexedStructLike);
 
 /// ws* (definition ws*)* END
 pub struct Document;

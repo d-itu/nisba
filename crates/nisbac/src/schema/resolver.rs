@@ -8,7 +8,7 @@ use std::{
 use ahash::{AHashMap, AHashSet};
 use thiserror::Error;
 
-use crate::parser::{IntoSpanned as _, Span, Spanned, ast};
+use crate::parser::{IntoSpanned as _, Spanned, ast};
 
 use super::*;
 
@@ -159,17 +159,6 @@ impl Resolver {
         }
     }
 
-    fn define_primitive(&mut self, primitive: Primitive, span: Span) -> SpannedResult<()> {
-        match self.cache.entry(Key::Name(primitive.name.clone())) {
-            hash_map::Entry::Occupied(_) => Err(ErrorKind::DuplicateDefinition.into_spanned(span)),
-            hash_map::Entry::Vacant(entry) => {
-                let id = self.arena.append(Definition::Primitive(primitive));
-                entry.insert(id);
-                Ok(())
-            }
-        }
-    }
-
     pub fn resolve(mut self, doc: &ast::Document) -> result::Result<Schema, Error> {
         for def in &doc.definitions {
             self.resolve_def(&def.item)?;
@@ -182,15 +171,21 @@ impl Resolver {
         ast::NamedDefinition { name, def }: &ast::NamedDefinition,
     ) -> SpannedResult<()> {
         match def {
-            ast::Definition::Primitive(ty) => {
-                let bit_width = ty.item.bit_width().map_err(ty.span.spanned())?;
-                self.define_primitive(
-                    Primitive {
-                        name: name.item.clone(),
-                        bit_width,
+            ast::Definition::Extern(ty) => {
+                let id = self.get_or_allocate(name.clone());
+                if self.arena.is_assigned(id) {
+                    Err(ErrorKind::DuplicateDefinition.into_spanned(name.span))?;
+                }
+                self.arena.insert(
+                    id,
+                    match ty {
+                        Some(ty) => Definition::Primitive(Primitive {
+                            bit_width: ty.item.bit_width().map_err(ty.span.spanned())?,
+                            name: name.item.clone(),
+                        }),
+                        None => Definition::Extern(name.item.clone()),
                     },
-                    name.span,
-                )?;
+                )
             }
             ast::Definition::StructLike { kind, members } => {
                 let id = self.get_or_allocate(name.clone());
@@ -393,7 +388,8 @@ impl Definition {
             | Definition::Packed(Packed { name, .. })
             | Definition::Struct(Struct { name, .. })
             | Definition::Enum(Enum { name, .. })
-            | Definition::Dict(Dict { name, .. }) => name,
+            | Definition::Dict(Dict { name, .. })
+            | Definition::Extern(name) => name,
         })
     }
 }
