@@ -96,7 +96,7 @@ The following inline type constructors are supported:
 
 Example:
 
-```
+```nisba
 @varint(u64)
 ```
 
@@ -111,7 +111,7 @@ Example:
 
 Example:
 
-```
+```nisba
 @vector(u8 u8)
 @stream(@varint(u64) string)
 ```
@@ -134,7 +134,7 @@ Example:
 
 Example:
 
-```
+```nisba
 @extern(u32) f32
 @extern message
 ```
@@ -151,7 +151,7 @@ Example:
 
 Examples:
 
-```
+```nisba
 @packed rgb {
   r: f32
   g: f32
@@ -184,7 +184,7 @@ Where:
 
 Examples:
 
-```
+```nisba
 @enum(u8) color {
   black
   white: void = 1
