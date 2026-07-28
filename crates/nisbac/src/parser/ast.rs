@@ -26,7 +26,7 @@ pub enum SequenceKind {
 #[derive(Debug, PartialEq)]
 pub enum LenType {
     Fixed(Unsigned),
-    Varint(Varint<Unsigned>),
+    Variant(Varint<Unsigned>),
 }
 
 #[derive(Debug, PartialEq)]

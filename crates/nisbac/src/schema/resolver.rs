@@ -400,7 +400,7 @@ impl Spanned<ast::LenType> {
             ast::LenType::Fixed(ast::Unsigned(number)) => {
                 LenType::from_bit_width(number.int_bit_width().map_err(self.span.spanned())?)
             }
-            &ast::LenType::Varint(ast::Varint(Spanned {
+            &ast::LenType::Variant(ast::Varint(Spanned {
                 item: ast::Unsigned(x),
                 span,
             })) => LenType::from_varint_size(x.varint_size().map_err(span.spanned())?),

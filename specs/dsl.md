@@ -209,7 +209,7 @@ Parsing expression grammar(PEG) is used to formally describe nisba syntax.
 doc := BEGIN ws* (definition ws*)* END
 definition := extern | struct-like | indexed-struct-like
 
-extern := "@extern" ws* ("(" ws* builtin ws* ")" ws*)? valid-name
+extern := "@extern" ws* ("(" ws* builtin ws* ")" ws* | ws+) valid-name
 
 struct-like := ("@strcut" | "@packed") ws+ valid-name ws* "{" (ws* member)* ws* "}"
 member := identifier ws* ":" ws* type
@@ -225,17 +225,17 @@ len-type := unsigned | varint-unsigned
 varint-unsigned := "@varint" ws* "(" ws* unsigned ws* ")"
 varint-signed := "@varint" ws* "(" ws* signed ws* ")"
 
+valid-name := !(builtin ("{" | "@" | ")" | "}" | "=" | ws | END)) identifier
+builtin := "void" | signed | unsigned
+
 unsigned := "u" packed-dec
 signed := "i" packed-dec
 packed-dec := "0" | [1-9] [0-9]*
 
-number := bin | hex | dec
-bin := "0" [bB] [_]* [01] [01_]*
-hex := "0" [xX] [_]* [0-9a-fA-F] [0-9a-fA-F_]*
-dec := [0-9] [0-9_]*
-
-valid-name := !(builtin ("{" | "@" | ")" | "}" | "=" | ws | END)) identifier
-builtin := "void" | signed | unsigned
+number :=
+| "0" [bB] [_]* [01] [01_]*
+| "0" [xX] [_]* [0-9a-fA-F] [0-9a-fA-F_]*
+| [0-9] [0-9_]*
 
 identifier := [a-zA-Z] [a-zA-Z0-9_]*
 ws := [ \r\n\t] | comment

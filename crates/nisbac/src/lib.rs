@@ -36,9 +36,7 @@ impl<T: AsRef<str>> Debug for Error<T> {
 impl<T: AsRef<str>> Display for Error<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            Kind::Parse(ParseError { offset, expected }) => {
-                write!(f, "expected {expected} at {offset}")
-            }
+            Kind::Parse(e) => write!(f, "{e}"),
             Kind::Resolve(e) => match e {
                 resolver::Error::Spanned(e) => {
                     write!(f, r#"{}: "{}""#, e.item, e.span.show(self.src.as_ref()))

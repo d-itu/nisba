@@ -1,7 +1,9 @@
-use std::ops::{Range, RangeInclusive};
-
-use either::Either;
+use smol_str::{SmolStr, SmolStrBuilder};
 use thiserror::Error;
+
+use ast::*;
+
+pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
@@ -10,9 +12,12 @@ pub struct Span {
 }
 
 impl Span {
+    pub fn with<T>(self, item: T) -> Spanned<T> {
+        Spanned { item, span: self }
+    }
     pub fn spanned<T>(self) -> impl FnOnce(T) -> Spanned<T> {
         #[inline]
-        move |item| Spanned { item, span: self }
+        move |item| self.with(item)
     }
     pub fn show(self, source: &str) -> &str {
         &source[self.start as usize..self.end as usize]
@@ -49,195 +54,195 @@ pub trait IntoSpanned: Sized {
 
 impl<T> IntoSpanned for T {}
 
-pub struct Parser<'a> {
-    cursor: Cursor<'a>,
-}
-
-impl<'a> Parser<'a> {
-    pub fn new(source: &'a str) -> Self {
-        Self {
-            cursor: Cursor {
-                byte_offset: 0,
-                source,
-            },
-        }
+impl ast::Number {
+    fn new(value: u8) -> Self {
+        Self::Value(value as _)
     }
-    fn parse<T: Rule>(&mut self, rule: T) -> ParseResult<T::Item> {
-        rule.parse(self)
-    }
-    fn parse_span<T: Rule>(&mut self, rule: T) -> ParseResult<Spanned<T::Item>> {
-        let start = self.cursor.byte_offset;
-        rule.parse(self).map(|item| Spanned {
-            item,
-            span: Span {
-                start: start as u32,
-                end: self.cursor.byte_offset as u32,
-            },
-        })
-    }
-    fn match_rule<T: Rule>(&mut self, rule: T) -> ParseResult<T::Item> {
-        let start = self.cursor.byte_offset;
-        self.parse(rule)
-            .inspect_err(|_| self.cursor.byte_offset = start)
-    }
-    fn match_span<T: Rule>(&mut self, rule: T) -> ParseResult<Spanned<T::Item>> {
-        let start = self.cursor.byte_offset as _;
-        rule.parse(self)
-            .inspect_err(|_| self.cursor.byte_offset = start)
-            .map(|item| Spanned {
-                item,
-                span: Span {
-                    start: start as u32,
-                    end: self.cursor.byte_offset as u32,
-                },
-            })
-    }
-    fn match_char(&mut self, expected: char) -> ParseResult<()> {
-        if self.cursor.peek() == Some(expected) {
-            self.cursor.next();
-            Ok(())
-        } else {
-            Err(Tree::Char(expected))?
-        }
-    }
-    fn match_str(&mut self, expected: &'static str) -> ParseResult<()> {
-        if self.cursor.remaining().starts_with(expected) {
-            self.cursor.byte_offset += expected.len();
-            Ok(())
-        } else {
-            Err(Tree::Str(expected))?
-        }
-    }
-    fn match_set(&mut self, expected: &'static str) -> ParseResult<char> {
-        match self.cursor.peek() {
-            Some(x) if expected.contains(x) => {
-                self.cursor.next();
-                Ok(x)
+    fn update(&mut self, mul: u8, add: u8) {
+        match self {
+            ast::Number::Value(value) => {
+                match value
+                    .checked_mul(mul as _)
+                    .and_then(|x| x.checked_add(add as _))
+                {
+                    Some(x) => *value = x,
+                    None => *self = Self::Overflow,
+                }
             }
-            _ => Err(Tree::Set(expected))?,
+            ast::Number::Overflow => {}
         }
     }
 }
 
-#[derive(Clone, Copy)]
-struct Cursor<'a> {
-    byte_offset: usize,
-    source: &'a str,
-}
-
-impl<'a> Cursor<'a> {
-    fn remaining(&self) -> &'a str {
-        unsafe {
-            str::from_utf8_unchecked(self.source.as_bytes().get_unchecked(self.byte_offset..))
+peg::parser! {
+  grammar nisba() for str {
+    inject span(_input, start, end) -> Span {
+        Span {
+            start: start as _,
+            end: end as _,
         }
     }
-    fn peek(&self) -> Option<char> {
-        self.remaining().chars().next()
-    }
-    fn next(&mut self) -> Option<char> {
-        let mut iter = self.remaining().chars();
-        let r = iter.next();
-        self.byte_offset = self.source.len() - iter.as_str().len();
-        r
-    }
-}
 
-type ParseResult<T> = Result<T, Unmatched>;
+    pub rule doc() -> Document
+        = _ definitions:definition()* { Document { definitions } }
 
-#[derive(Error, Debug)]
-#[error("syntax error: expected {expected}")]
-pub struct Unmatched {
-    #[from]
-    expected: Tree,
-}
+    rule definition() -> Spanned<NamedDefinition>
+        = x:extern() _ { span.with(x) }
+        / x:struct_like() _ { span.with(x) }
+        / x:indexed_struct_like() _ { span.with(x) }
 
-#[derive(Error, Debug)]
-pub enum Tree {
-    #[error("'{0}'")]
-    Char(char),
-    #[error("{0:?}")]
-    Range(Range<char>),
-    #[error("{0:?}")]
-    RangeInclusive(RangeInclusive<char>),
-    #[error("\"{0}\"")]
-    Str(&'static str),
-    #[error("[{}]", _0.escape_debug())]
-    Set(&'static str),
-    #[error("{0}")]
-    Rule(&'static str),
-    #[error("{0} | {1}")]
-    Choice(&'static Tree, &'static Tree),
-    #[error("!{0}")]
-    Not(&'static Tree),
-    #[error("end of input")]
-    End,
-}
+    rule extern_body() -> Option<Builtin>
+        = ['('] _ builtin:builtin() _ [')'] _ { Some(builtin) }
+        / ws() { None }
+    rule extern() -> NamedDefinition
+        = "@extern" _ alias:extern_body() _ name:valid_name() {
+            NamedDefinition {
+                name: span.with(name),
+                def: Definition::Extern(alias.map(span.spanned())),
+            }
+        }
 
-trait Rule {
-    type Item: Sized;
-    const EXPECTED: Tree;
-    fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item>;
-    fn unmatched<T>() -> Result<T, Unmatched> {
-        Err(Unmatched {
-            expected: Self::EXPECTED,
-        })
-    }
-}
+    rule member() -> Spanned<Member>
+        = name:identifier() _ [':'] _ ty:ty() _ {
+            span.with(Member {
+                name: span.with(name),
+                ty: span.with(ty),
+            })
+        }
+    rule struct_like() -> NamedDefinition
+        = kind:struct_kind() _ name:valid_name() _ ['{'] _ members:member()* ['}'] {
+            NamedDefinition {
+                name: span.with(name),
+                def: Definition::StructLike { kind, members },
+            }
+        }
 
-const fn map<T: Rule + Sized, R, F: FuncOnce<T::Item, Return = R>>(rule: T, func: F) -> Map<T, F> {
-    Map { rule, func }
-}
+    rule member_type() -> Type = [':'] _ ty:ty() { ty }
+    rule member_index() -> Number = ['='] _ index:number() { index }
+    rule indexed_member() -> Spanned<IndexedMember>
+        = name:identifier() _ ty:member_type()? _ index:member_index()? _ {
+            span.with(IndexedMember {
+                name: span.with(name),
+                ty: ty.map(span.spanned()),
+                index: index.map(span.spanned()),
+            })
+        }
+    rule indexed_struct_like() -> NamedDefinition
+        = kind:indexed_struct_kind() _ ['('] _ index_ty:unsigned() _ [')'] _ name:valid_name() _ ['{'] _ members:indexed_member()* ['}']
+        {
+            NamedDefinition {
+                name: span.with(name),
+                def:Definition::IndexedStructLike {
+                    kind,
+                    index_ty: span.with(index_ty),
+                    members,
+                },
+            }
+        }
 
-struct Map<T, F> {
-    rule: T,
-    func: F,
-}
+    rule ty() -> Type
+        = x:sequence_like() { Type::Sequence(Box::new(x)) }
+        / x:varint_signed() { Type::VarintSigned(x) }
+        / x:varint_unsigned() { Type::VarintUnsigned(x) }
+        / x:valid_name() { Type::Ident(x) }
+        / x:builtin() { Type::Builtin(x) }
 
-impl<T: Rule, F: FuncOnce<T::Item>> Rule for Map<T, F> {
-    type Item = F::Return;
-    const EXPECTED: Tree = T::EXPECTED;
+    rule sequence_like() -> SequenceLike
+        = kind:sequence_kind() _ ['('] _ len_ty:len_type() _ elem_ty:ty() _ [')'] {
+            SequenceLike {
+                kind,
+                len_ty: span.with(len_ty),
+                elem_ty: span.with(elem_ty),
+            }
+        }
 
-    fn parse(self, parser: &mut Parser) -> ParseResult<Self::Item> {
-        self.rule.parse(parser).map(|x| self.func.apply(x))
-    }
-}
+    rule len_type() -> LenType
+        = x:unsigned() { LenType::Fixed(x) }
+        / x:varint_unsigned() { LenType::Variant(x) }
 
-trait FuncOnce<A> {
-    type Return;
-    fn apply(self, arg: A) -> Self::Return;
-}
+    rule varint_unsigned() -> Varint<Unsigned>
+        = "@varint" _ ['('] _ x:unsigned() _ [')'] { Varint(span.with(x)) }
+    rule varint_signed() -> Varint<Signed>
+        = "@varint" _ ['('] _ x:signed() _ [')'] { Varint(span.with(x)) }
 
-impl<A, R, F: FnOnce(A) -> R> FuncOnce<A> for F {
-    type Return = R;
-    fn apply(self, arg: A) -> Self::Return {
-        (self)(arg)
-    }
-}
+    rule valid_name() -> SmolStr
+        = !(builtin() / ['{' | '@' | ')' | '}' | '='] / ws() / eof()) x:identifier() { x }
 
-struct EitherIntoInner;
-impl<T> FuncOnce<Either<T, T>> for EitherIntoInner {
-    type Return = T;
-    fn apply(self, arg: Either<T, T>) -> Self::Return {
-        arg.into_inner()
-    }
-}
+    rule builtin() -> Builtin
+        = "void" { Builtin::Void }
+        / x:signed() { Builtin::Signed(x) }
+        / x:unsigned() { Builtin::Unsigned(x) }
 
-#[derive(Error, Debug)]
-#[error("expected {expected} at {offset}")]
-pub struct ParseError {
-    pub offset: usize,
-    pub expected: Tree,
+    rule unsigned() -> Unsigned = "u" x:packed_dec() { Unsigned(x) }
+    rule signed() -> Signed = "i" x:packed_dec() { Signed(x) }
+
+    rule packed_dec() -> Number
+        = ['0'] { Number::new(0) }
+        / x:['1'..='9'] xs:$(['0'..='9' | '_']*) {
+            let mut value = Number::new(x as u8 - b'0');
+            for x in xs.as_bytes() {
+                if let b'0'..=b'9' = x { value.update(10, x - b'0') }
+            }
+            value
+        }
+
+    rule number() -> Number
+        = ['0'] ['b' | 'B'] ['_']* x:['0' | '1'] xs:$(['0' | '1' | '_']*) {
+            let mut value = Number::new(x as u8 - b'0');
+            for x in xs.as_bytes() {
+                if let b'0' | b'1' = x { value.update(2, x - b'0') }
+            }
+            value
+        }
+        / ['0'] ['x' | 'X'] ['_']* [x if let Some(x) = x.to_digit(16)] xs:$(['0'..='9' | 'a' ..='f' | 'A' ..='F' | '_']*) {
+            let mut value = Number::new(x as _);
+            for x in xs.as_bytes() {
+                match x {
+                    b'0'..=b'9' => value.update(16, x - b'0'),
+                    b'a'..=b'f' => value.update(16, x - b'a' + 10),
+                    b'A'..=b'F' => value.update(16, x - b'A' + 10),
+                    _ => {}
+                }
+            }
+            value
+        }
+        / x:['0'..='9'] xs:$(['0'..='9' | '_']*) {
+            let mut value = Number::new(x as u8 - b'0');
+            for x in xs.as_bytes() {
+                if let b'0'..=b'9' = x { value.update(10, x - b'0') }
+            }
+            value
+        }
+
+    rule identifier() -> SmolStr
+        = x: ['a'..='z' | 'A'..='Z'] xs: $(['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) {
+            let mut builder = SmolStrBuilder::new();
+            builder.push(x);
+            builder.push_str(xs);
+            builder.finish()
+        }
+
+    rule sequence_kind() -> SequenceKind
+        = "@vector" { SequenceKind::Vector }
+        / "@stream" { SequenceKind::Stream }
+    rule struct_kind() -> StructKind
+        = "@struct" { StructKind::Struct }
+        / "@packed" { StructKind::Packed }
+    rule indexed_struct_kind() -> IndexedStructKind
+        = "@enum" { IndexedStructKind::Enum }
+        / "@dict" { IndexedStructKind::Dict }
+
+    rule _() = ws()*
+    rule ws() = [' ' | '\r' | '\n' | '\t'] / comment()
+
+    rule comment() = "//" (!(['\n'] / eof()) [_])+
+
+    rule eof() = ![_]
+  }
 }
 
 pub fn parse(source: &str) -> Result<ast::Document, ParseError> {
-    let mut parser = Parser::new(source);
-    parser
-        .parse(rules::Document)
-        .map_err(|Unmatched { expected }| ParseError {
-            offset: parser.cursor.byte_offset,
-            expected,
-        })
+    nisba::doc(source)
 }
 
 pub mod ast;
-mod rules;
