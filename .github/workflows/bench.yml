@@ -7,14 +7,14 @@ on:
       - "crates/nisba/**"
       - "crates/nisbac/**"
       - "benches/**"
-      - ".github/workflows/check.yml"
+      - ".github/workflows/bench.yml"
   pull_request:
     branches: ["master"]
     paths:
       - "crates/nisba/**"
       - "crates/nisbac/**"
       - "benches/**"
-      - ".github/workflows/check.yml"
+      - ".github/workflows/bench.yml"
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
         run: cargo bench
 
       - name: Upload criterion report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-report
           path: target/criterion
