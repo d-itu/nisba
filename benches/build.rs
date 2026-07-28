@@ -23,6 +23,7 @@ fn main() {
     let citm_catalog = dir.join("benches/data/citm_catalog.json");
     if !citm_catalog.exists() {
         let url = "https://raw.githubusercontent.com/miloyip/nativejson-benchmark/refs/tags/v1.0.0/data/citm_catalog.json";
+        fs::create_dir(citm_catalog.parent().unwrap()).unwrap();
         fs::write(
             citm_catalog,
             reqwest::blocking::get(url).unwrap().bytes().unwrap(),
