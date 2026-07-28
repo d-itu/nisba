@@ -352,17 +352,18 @@ fn bench(c: &mut Criterion) {
     let proto = proto(&value);
     let bincode = bincode(&value);
 
-    c.bench_function("nisba encode", |b| {
+    let mut g = c.benchmark_group("encode");
+    g.bench_function("nisba encode", |b| {
         b.iter(|| {
             hint::black_box(nisba::encode::encode(&nisba).unwrap());
         })
     });
-    c.bench_function("protobuf encode", |b| {
+    g.bench_function("protobuf encode", |b| {
         b.iter(|| {
             hint::black_box(proto.serialize().unwrap());
         })
     });
-    c.bench_function("bincode encode", |b| {
+    g.bench_function("bincode encode", |b| {
         b.iter(|| {
             hint::black_box(
                 bincode_next::encode_to_vec(
@@ -373,6 +374,7 @@ fn bench(c: &mut Criterion) {
             )
         })
     });
+    g.finish();
 
     let nisba = nisba::encode::encode(&nisba).unwrap();
     let proto = proto.serialize().unwrap();
@@ -386,21 +388,20 @@ fn bench(c: &mut Criterion) {
     dbg!(proto.len());
     dbg!(bincode.len());
 
-    c.bench_function("nisba decode+visit", |b| {
+    let mut g = c.benchmark_group("decode");
+    g.bench_function("nisba", |b| {
         b.iter(|| {
-            hint::black_box(
-                nisba::decode::decode::<nisba_decode::Json>(&nisba)
-                    .unwrap()
-                    .visit(),
-            );
+            nisba::decode::decode::<nisba_decode::Json>(&nisba)
+                .unwrap()
+                .visit();
         })
     });
-    c.bench_function("protobuf decode+visit", |b| {
+    g.bench_function("protobuf", |b| {
         b.iter(|| {
-            hint::black_box(proto::Json::parse(&proto).unwrap().as_view().visit());
+            proto::Json::parse(&proto).unwrap().as_view().visit();
         })
     });
-    c.bench_function("bincode decode+visit", |b| {
+    g.bench_function("bincode", |b| {
         b.iter(|| {
             bincode_next::borrow_decode_from_slice::<bincode::JsonRef, _>(
                 &bincode,
@@ -411,6 +412,7 @@ fn bench(c: &mut Criterion) {
             .visit()
         })
     });
+    g.finish();
 
     let nisba = nisba::decode::decode::<nisba_decode::Json>(&nisba).unwrap();
     let proto = proto::Json::parse(&proto).unwrap();

@@ -1,0 +1,34 @@
+name: Benchmark
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "crates/nisba/**"
+      - "crates/nisbac/**"
+      - "benches/**"
+      - ".github/workflows/check.yml"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "crates/nisba/**"
+      - "crates/nisbac/**"
+      - "benches/**"
+      - ".github/workflows/check.yml"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run benchmarks
+        run: cargo bench
+
+      - name: Upload criterion report
+        uses: actions/upload-artifact@v3
+        with:
+          name: criterion-report
+          path: target/criterion
